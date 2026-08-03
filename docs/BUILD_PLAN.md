@@ -4,6 +4,9 @@ This document maps the build to the section numbers of *Build Specification — 
 (referred to below as §1–§21). It records the architecture, the decisions taken and why, and
 the phase order.
 
+See the root [`README.md`](../README.md) for the product overview, current status, and roadmap
+summary. This document is the detailed phase-by-phase reference.
+
 ---
 
 ## 1. Decisions
