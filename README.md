@@ -57,7 +57,7 @@ humans stay central to meaningful care and accountability.
 | --- | --- | --- |
 | **`apps/mobile`** (Expo / React Native) | The product. All 18 screens (§16). | Native camera for label scanning (§4), on-device scheduled notifications with no push server (§13), text-to-speech (§12). Expo Web also gives a browser-openable fallback build for live demos. |
 | **`apps/console`** (Next.js) | Admin/developer visibility and the coach dashboard (§10). Deliberately read-mostly. | Satisfies §21's "responsive mobile/desktop layouts" honestly: mobile is native, desktop is the console — rather than one codebase pretending to be both. |
-| **`apps/api`** (Hono on Node) | The only process that touches the database. Both clients consume the same contract. | Forces a real API boundary instead of one client reaching into the database directly. |
+| **`apps/api`** (Hono, dual-runtime) | The only process that touches the database. Both clients consume the same contract. Deploys unmodified to either a Node host or Cloudflare Workers. | Forces a real API boundary instead of one client reaching into the database directly. |
 
 ### Shared packages
 
@@ -81,10 +81,18 @@ separate modules.
 
 ### Data & auth
 
-- **Postgres (Neon free tier) + Prisma.** `schema.prisma` is a single legible artifact for the
-  "database schema" deliverable in §21.
-- **JWT access + refresh tokens, argon2 password hashing.** Cookie-based sessions are awkward to
-  drive from React Native, so bearer tokens are used across both clients.
+- **Postgres (Neon), accessed via Prisma's Neon serverless driver adapter.** `schema.prisma` is a
+  single legible artifact for the "database schema" deliverable in §21. The driver adapter speaks
+  HTTP/WebSocket rather than raw TCP, which is what lets the same Prisma client run on both a Node
+  host and on Cloudflare Workers, where raw TCP sockets aren't available — one database, one
+  migration history, one seed script, regardless of which runtime is serving a given deployment.
+- **JWT access + refresh tokens.** Cookie-based sessions are awkward to drive from React Native, so
+  bearer tokens are used across both clients.
+- **Password hashing via PBKDF2 (WebCrypto `crypto.subtle`), not argon2.** argon2's reference
+  implementations are native Node bindings and don't run on Workers; WebCrypto needs no native
+  dependency and runs identically on both runtimes. It's a weaker KDF than argon2 in isolation, so
+  it's used at a high iteration count (≥600,000, current OWASP guidance) alongside the strong
+  password policy already required by §14.
 
 ---
 
@@ -96,8 +104,12 @@ is in [`docs/BUILD_PLAN.md` §3](docs/BUILD_PLAN.md#3-cross-cutting-design-decis
 1. **Permissions are a policy engine, not a column (§10, §14).** Access is a grant matrix —
    `(owner, grantee, data_category) → access level` — resolved by one `can()` function that every
    health-data read passes through server-side. Buddy visibility is per-buddy, not one shared
-   bucket, because §9 requires users to control exactly what a buddy can see. Every sensitive
-   action is appended to an immutable audit log.
+   bucket, because §9 requires users to control exactly what a buddy can see. The **default** grant
+   for a newly accepted buddy is clinical detail — medication names and adherence events, wellness
+   metrics — not just engagement signals; AI companion conversation content and notes marked private
+   stay private regardless. Because that default is broader than §9's own example, per-buddy
+   narrowing ships alongside the grant itself, not as a later add-on — it's the safety valve that
+   makes the default acceptable. Every sensitive action is appended to an immutable audit log.
 
 2. **Doses are materialized rows, not a cron string (§5).** Two of the five required states —
    *missed* and, implicitly, *unknown* — are time-derived rather than user actions. A dose becomes
@@ -168,6 +180,11 @@ diagnosis or treatment — for example:
 > "I can't diagnose this. Because you've reported these symptoms, it would be reasonable to speak
 > with a healthcare professional."
 
+Escalation guidance is **configurable per deployment**: one config module holds a region field and
+any hotline numbers, defaulting to neutral wording ("contact your local emergency services or a
+healthcare professional") when unset, so a deployment can add localized numbers via environment
+variable without a code change.
+
 The primary evidence that these rules hold is an **adversarial test suite** (Phase 4) asserting
 response properties for diagnosis-seeking, dosage-change, stop-medication, and crisis-language
 inputs — run against the deterministic classifier/validator described above, not against the model
@@ -226,22 +243,16 @@ Essentials are built end-to-end and properly, before any Advanced item is starte
   needs a native module. Text-to-speech (read-aloud, §12) works everywhere. Voice input is an
   Advanced item (Phase 9), so this blocks nothing on the Essentials path.
 
-### Open decisions
+### Decision log
 
-Not yet finalized; will be resolved before or during the phase noted:
+Four decisions were open after the initial architecture pass and are now resolved:
 
-- **API hosting** — Node runtime (Render/Railway/Fly free tier) vs. Cloudflare Workers directly.
-  Workers is cheaper/faster but constrains library choices (no native argon2 binding, D1 instead of
-  Postgres). *Resolve before Phase 0.*
-- **Coach dashboard priority** — currently Phase 8 (Advanced) per §19's own categorization, but it
-  most directly demonstrates §20's "humans stay central" thesis and its data model already lands in
-  Phase 5. May be promoted ahead of other Advanced items. *Resolve before Phase 8.*
-- **Buddy visibility granularity** — assumed to default to engagement-level detail (e.g. "Alex
-  hasn't completed today's check-in") rather than clinical detail (e.g. "Alex missed a dose of
-  Metformin"), per the example given in §9. *Confirm before Phase 5.*
-- **Emergency escalation copy region** — region-neutral wording ("contact your local emergency
-  services") by default, with any region-specific numbers isolated to one config file.
-  *Confirm before Phase 4, or leave region-neutral.*
+| Decision | Resolution |
+| --- | --- |
+| **API hosting** | Dual-runtime: `apps/api` deploys unmodified to a Node host or to Cloudflare Workers. Enabled by Prisma's Neon serverless driver adapter (HTTP/WebSocket, not raw TCP) and PBKDF2/WebCrypto password hashing (no native binding). See [Data & auth](#data--auth). |
+| **Coach dashboard priority** | Stays in Phase 8, per §19's own categorization. No schema change — the data model still lands in Phase 5; only the dashboard UI is later. |
+| **Buddy visibility granularity** | Default grant is **clinical detail** (medication names, adherence events, wellness metrics), not just engagement signals. AI companion conversations and notes marked private stay private regardless. Because this default is broader than §9's own example, per-buddy narrowing ships in the same phase as the grant itself (Phase 1/5), not later. |
+| **Emergency escalation copy** | Configurable per deployment. One config module holds a region field and hotline numbers, defaulting to neutral wording when unset. |
 
 ---
 

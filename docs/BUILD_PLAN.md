@@ -15,15 +15,31 @@ summary. This document is the detailed phase-by-phase reference.
 | --- | --- | --- |
 | Primary client | **Expo (React Native)** | The product itself. Native camera (§4), on-device scheduled notifications (§13), text-to-speech (§12). |
 | Secondary client | **Next.js console** | Admin/developer visibility and the coach dashboard (§10). Deliberately read-mostly. |
-| Backend | **Hono on Node**, single API | Forces a real API boundary; both clients consume the same contract. Only the API touches the database. |
-| Database | **Postgres (Neon free tier) + Prisma** | §21 lists "database schema" as a deliverable; `schema.prisma` is one legible artifact. |
-| Auth | **JWT access + refresh, argon2** | Cookie sessions are awkward from React Native. |
+| Backend | **Hono**, dual-runtime, single API | Forces a real API boundary; both clients consume the same contract. Only the API touches the database. Same codebase deploys to a Node host or to Cloudflare Workers. |
+| Database | **Postgres (Neon)** via Prisma's Neon serverless driver adapter | §21 lists "database schema" as a deliverable; `schema.prisma` is one legible artifact. One schema, one migration history, one seed script regardless of which runtime is serving requests. |
+| Auth | **JWT access + refresh, PBKDF2 (WebCrypto) password hashing** | Cookie sessions are awkward from React Native. PBKDF2 via `crypto.subtle` runs unmodified on both Node and Workers; argon2's reference implementations are native Node bindings that don't run on Workers. |
 | AI | **Free-tier providers with a fallback chain** | Cost. See §4 of this document for the safety consequence. |
 | Scope order | **11 Essentials (§19) first** | §19 explicitly prefers a working MVP over broad shallow integration. |
 
 Satisfying §21's "responsive mobile/desktop layouts": mobile is the native app, desktop is the
 console. Expo Web additionally provides a browser-openable build of the real app as a live-demo
 fallback.
+
+### 1.1 Dual-runtime API
+
+`apps/api` is written to run unmodified on either a Node host (Render/Railway/Fly) or as a
+Cloudflare Worker, chosen at deploy time rather than baked into the code. Two constraints make this
+possible:
+
+- **Database access over HTTP, not raw TCP.** Cloudflare Workers cannot open a raw TCP socket, which
+  rules out a standard `pg` connection. Prisma's Neon serverless driver adapter speaks HTTP/WebSocket
+  instead, so the same Prisma client code runs on both runtimes against the same Postgres database.
+  SQLite/D1 remains an option for a Workers-only deployment later, but a single Postgres database
+  everywhere is simpler while both runtimes are in play.
+- **Password hashing without a native dependency.** PBKDF2 via `crypto.subtle` (WebCrypto) runs
+  identically on Node and Workers. It's a weaker KDF than argon2 taken alone, so it's used at a high
+  iteration count (≥600,000, current OWASP guidance) alongside the existing strong-password-policy
+  requirement (§14).
 
 ---
 
@@ -34,7 +50,7 @@ careconnect/
   apps/
     mobile/          Expo (React Native) — the real app, all 18 screens (§16)
     console/         Next.js — admin/dev + coach dashboard (§10)
-    api/             Hono on Node — the only process that touches the database
+    api/             Hono, dual-runtime (Node or Cloudflare Workers) — the only process that touches the database
   packages/
     core/            domain logic, pure TypeScript, no I/O
       policy/        permission engine (§10, §14)
@@ -74,7 +90,13 @@ data passes through, server-side. No role checks in components.
 Open questions this design settles, which the specification leaves implicit:
 
 - Buddy visibility is **per-buddy**, not one shared bucket — §9 requires users to "control exactly
-  what information their buddy can see."
+  what information their buddy can see." The **default** grant for a newly accepted buddy is clinical
+  detail: medication names, adherence events (taken/skipped/missed), and wellness metrics. Always
+  private regardless of buddy grant: AI companion conversation content, and any check-in entry the
+  user marks private. Because the default is broader than §9's own example ("Alex hasn't completed
+  today's check-in"), the per-buddy narrowing control is not optional polish — it is the safety valve
+  that makes the default acceptable, and it ships in the same phase as the grant itself (Phase 1 /
+  Phase 5), not as a later add-on.
 - Revoking a coach ends future access; anything already exported is recorded in the audit log
   rather than pretended to be retractable.
 
@@ -146,7 +168,10 @@ at all, which is what makes §12's "do not allow voice commands to modify prescr
 "never change medication dosage" structurally true rather than prompt-dependent.
 
 Escalation (§11) is triggered by the input classifier, not by the model's judgement. Emergency
-guidance is region-neutral by default and lives in one configuration file.
+guidance is **configurable per deployment**: one config module (`packages/core/safety/escalation.config.ts`)
+holds a region field and any hotline numbers, defaulting to neutral wording ("contact your local
+emergency services or a healthcare professional") when the region is unset. A deployment sets the
+region via environment variable to get localized numbers without a code change.
 
 **Task before Phase 1 closes:** verify each provider's current free-tier limits and available model
 IDs directly, rather than relying on documentation that may be out of date, then lock the choices.
