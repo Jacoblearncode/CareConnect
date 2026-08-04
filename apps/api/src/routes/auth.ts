@@ -2,6 +2,7 @@ import {
   loginRequestSchema,
   refreshRequestSchema,
   registerRequestSchema,
+  updateMeRequestSchema,
   type AuthResponse,
 } from "@careconnect/contracts";
 import { auth as coreAuth } from "@careconnect/core";
@@ -156,6 +157,36 @@ export function registerAuthRoutes(app: Hono<AppEnv>): void {
     if (!user || user.status !== "ACTIVE") {
       throw Errors.unauthorized();
     }
+    return c.json({ user: toAuthUser(user) }, 200);
+  });
+
+  auth.patch("/me", requireAuth, async (c) => {
+    const body = updateMeRequestSchema.safeParse(await c.req.json());
+    if (!body.success) {
+      throw Errors.validation(body.error.issues[0]?.message ?? "Invalid request.");
+    }
+    const db = c.var.db;
+    const userId = c.var.userId as string;
+
+    const existing = await db.user.findUnique({ where: { id: userId } });
+    if (!existing || existing.status !== "ACTIVE") {
+      throw Errors.unauthorized();
+    }
+
+    const user = await db.user.update({
+      where: { id: userId },
+      data: { accessibilityMode: body.data.accessibilityMode },
+    });
+
+    await db.auditLog.create({
+      data: {
+        actorUserId: userId,
+        action: "user.profile_updated",
+        targetUserId: userId,
+        metadata: { accessibilityMode: user.accessibilityMode },
+      },
+    });
+
     return c.json({ user: toAuthUser(user) }, 200);
   });
 

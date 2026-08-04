@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import type { AppEnv } from "./app-env.js";
 import type { AppConfig } from "./env.js";
 import { errorMiddleware } from "./middleware/error.js";
@@ -24,6 +25,15 @@ export interface AppDeps {
  */
 export function createApp(deps: AppDeps) {
   const app = new Hono<AppEnv>();
+
+  app.use(
+    "*",
+    cors({
+      origin: deps.config.corsOrigins.includes("*") ? "*" : deps.config.corsOrigins,
+      allowHeaders: ["Content-Type", "Authorization"],
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    }),
+  );
 
   app.use("*", async (c, next) => {
     c.set("db", deps.db);

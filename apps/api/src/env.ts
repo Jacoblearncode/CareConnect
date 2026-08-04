@@ -12,6 +12,7 @@ export interface AppConfig {
   refreshTokenTtlSeconds: number;
   ai: AiProviderConfig;
   escalation: safety.EscalationConfig;
+  corsOrigins: string[];
 }
 
 function strOrUndefined(value: string | undefined): string | undefined {
@@ -38,5 +39,10 @@ export function loadConfig(env: Record<string, string | undefined>): AppConfig {
       crisisLineName: strOrUndefined(env["ESCALATION_CRISIS_LINE_NAME"]),
       crisisLineNumber: strOrUndefined(env["ESCALATION_CRISIS_LINE_NUMBER"]),
     },
+    // Auth is bearer-token, not cookie-based, so a permissive CORS default
+    // doesn't hand out an ambient credential the way it would for a
+    // cookie-authenticated API — but it's still env-configurable so a real
+    // deployment can lock it to its actual client origins (§14).
+    corsOrigins: strOrUndefined(env["CORS_ORIGINS"])?.split(",").map((o) => o.trim()) ?? ["*"],
   };
 }

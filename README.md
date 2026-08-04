@@ -18,9 +18,11 @@ phases described in [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md). The full source 
 
 ## Status
 
-**Phases 0-5 complete: auth, permissions, medication, wellness, AI companion, and the human layer
-(buddies + coach data model) are all implemented, tested, and live-verified against a running
-Postgres database.** See [Roadmap](#roadmap) for phase status.
+**Phases 0-6 complete: auth, permissions, medication, wellness, AI companion, the human layer
+(buddies + coach data model), and now accessibility are all implemented, tested, and
+live-verified.** Phase 6 is also the first phase with a real UI: `apps/mobile` (Expo/React Native)
+is scaffolded with a working login → dashboard → settings flow, verified in-browser end to end
+against the live API. See [Roadmap](#roadmap) for phase status.
 
 ---
 
@@ -57,7 +59,7 @@ humans stay central to meaningful care and accountability.
 
 | App | Role | Why |
 | --- | --- | --- |
-| **`apps/mobile`** (Expo / React Native) | The product. All 18 screens (§16). | Native camera for label scanning (§4), on-device scheduled notifications with no push server (§13), text-to-speech (§12). Expo Web also gives a browser-openable fallback build for live demos. |
+| **`apps/mobile`** (Expo / React Native) | The product. Login → dashboard → settings scaffolded as of Phase 6 (3 of 18 screens, §16); the rest land as their phases do. | Native camera for label scanning (§4), on-device scheduled notifications with no push server (§13), text-to-speech (§12) — the read-aloud button on the dashboard uses this today via `expo-speech`. Expo Web also gives a browser-openable fallback build for live demos. |
 | **`apps/console`** (Next.js) | Admin/developer visibility and the coach dashboard (§10). Deliberately read-mostly. | Satisfies §21's "responsive mobile/desktop layouts" honestly: mobile is native, desktop is the console — rather than one codebase pretending to be both. |
 | **`apps/api`** (Hono, dual-runtime) | The only process that touches the database. Both clients consume the same contract. Deploys unmodified to either a Node host or Cloudflare Workers. | Forces a real API boundary instead of one client reaching into the database directly. |
 
@@ -70,8 +72,9 @@ packages/
     doses/         dose state machine + adherence math (§5)
     safety/        AI guardrails, input and output (§15, §18)
     ai/            provider abstraction + fallback chain
+    human/         buddy/coach default grants, non-medical goal-content heuristic (§9, §10)
   contracts/       zod schemas + typed client, shared by both apps
-  tokens/          design tokens, including the accessibility scale (§12)
+  tokens/          design tokens: type scale, touch targets, contrast, motion (§12) — implemented
 ```
 
 `packages/core` is pure and I/O-free by rule: every constraint the specification cares about — who
@@ -133,7 +136,15 @@ is in [`docs/BUILD_PLAN.md` §3](docs/BUILD_PLAN.md#3-cross-cutting-design-decis
 5. **Accessibility is a token layer, not parallel screens (§2, §12).** Senior/Accessibility Mode
    swaps type scale, touch-target size, contrast, and motion at the root of one component tree.
    Duplicating 18 screens into "senior versions" would guarantee the two copies drift apart over
-   time.
+   time. `packages/tokens` (`getTokens()`) makes this concrete and testable: the Accessibility Mode
+   type scale is strictly larger at every role, its touch targets exceed the WCAG 2.5.5 minimum
+   rather than merely meeting it, its color pairs clear WCAG **AAA** (7:1) rather than just AA
+   (4.5:1) — including "muted" text, which stays dark rather than going lighter, since a lighter
+   secondary tone is exactly the kind of low-contrast text this mode exists to eliminate — and
+   motion is disabled outright rather than merely shortened. `apps/mobile`'s
+   `AccessibilityProvider` reads the mode from `User.accessibilityMode` and re-renders the whole
+   tree from it; toggling it in Settings both restyles the app immediately and persists to the
+   account via `PATCH /auth/me`, verified live in-browser.
 
 ### AI provider strategy
 
@@ -236,7 +247,7 @@ Full detail, including which spec section each phase satisfies, is in
 | 3 — Wellness | Health metrics (11 types), adaptive daily check-in | **Complete** |
 | 4 — AI companion & safety | Full safety pipeline, escalation, adversarial test suite | **Complete**\*\* |
 | 5 — Human layer | Buddy invites, messaging, accountability; coach data model | **Complete** |
-| 6 — Accessibility | Token-layer Senior/Accessibility Mode, TTS, confirmations | Not started |
+| 6 — Accessibility | Token-layer Senior/Accessibility Mode, TTS, confirmations | **Complete** |
 | 7 — Dashboard & notifications | "What do I need to do today?" dashboard, quiet hours | Not started |
 | **→ 11 Essentials (§19) complete and demoable end-to-end** | | |
 | 8 — Console | Admin/dev views, coach dashboard | Not started |
@@ -247,15 +258,23 @@ Essentials are built end-to-end and properly, before any Advanced item is starte
 
 ### Platform constraints on record
 
-- **\*Phase 2's "reminders" is the server side only.** Every dose a schedule implies is a real,
-  time-windowed `DoseInstance` row — the data a reminder would fire from is correct and complete.
-  Actually *delivering* a reminder on-device needs `apps/mobile` to exist first (Phase 2+, not yet
-  scaffolded — see [Repository structure](#repository-structure)). When it does: Expo schedules
-  local notifications on-device with no push server or APNs/FCM credentials required, so this
-  isn't blocked on any infrastructure decision, just on the mobile app existing.
+- **\*Phase 2's "reminders" is the server side only, still.** Every dose a schedule implies is a
+  real, time-windowed `DoseInstance` row — the data a reminder would fire from is correct and
+  complete. `apps/mobile` exists as of Phase 6, but nothing in it schedules an on-device
+  notification yet — that's Phase 7's "Notification preferences: quiet hours, frequency,
+  per-category toggles," the natural place to wire `expo-notifications` up against real
+  preferences rather than firing unconditionally. When it lands: Expo schedules local
+  notifications on-device with no push server or APNs/FCM credentials required, so this isn't
+  blocked on any infrastructure decision.
 - **Voice input likely needs an Expo development build**, not Expo Go, because speech-to-text
-  needs a native module. Text-to-speech (read-aloud, §12) works everywhere. Voice input is an
-  Advanced item (Phase 9), so this blocks nothing on the Essentials path.
+  needs a native module. Text-to-speech (read-aloud, §12) is real today — the dashboard's "Read
+  today's summary aloud" button calls `expo-speech`, verified in a live browser session (Expo Web
+  wraps the browser's own `SpeechSynthesis` API; the native builds use the OS TTS engine through
+  the same `expo-speech` call, unverified only in the sense that no physical device or simulator
+  has run it in this environment — see the console warning about React Native DevTools, which is
+  an unrelated Electron sandboxing quirk of running Expo's CLI as root in this container, not an
+  app bug). Voice *input* is an Advanced item (Phase 9), so this blocks nothing on the Essentials
+  path.
 - **\*\*Phase 4's provider calls are reviewed but not live-verified.** No environment this project
   has run in has a real `CF_ACCOUNT_ID` or `GROQ_API_KEY` configured, so `createWorkersAiProvider`
   and `createGroqProvider` (`apps/api/src/ai/providers.ts`) are written against each API's
@@ -280,8 +299,9 @@ Four decisions were open after the initial architecture pass and are now resolve
 
 ## Getting started
 
-`apps/api` and its auth flow are functional as of Phase 0. `apps/mobile` and `apps/console` don't
-exist yet — this section covers what's runnable today and will grow as each app lands.
+`apps/api` and its auth flow are functional as of Phase 0; `apps/mobile` joined as of Phase 6.
+`apps/console` doesn't exist yet — this section covers what's runnable today and will grow as each
+app lands.
 
 ### Prerequisites
 
@@ -313,6 +333,9 @@ Edit `.env`:
   `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
 - The AI provider keys are optional — see [`docs/AI_PROVIDERS.md`](docs/AI_PROVIDERS.md). Leaving
   them blank is fine until Phase 4.
+- `CORS_ORIGINS` is optional; unset defaults to `*`. Auth is bearer-token, not cookies, so a
+  wildcard doesn't hand out an ambient credential the way it would for a cookie-authenticated API —
+  but set this to your actual client origin(s) for a real deployment.
 
 ### 3. Migrate and seed the database
 
@@ -340,8 +363,9 @@ curl http://localhost:8787/health
 ```
 
 The auth flow is live: `POST /auth/register`, `POST /auth/login`, `GET /auth/me` (bearer token),
-`POST /auth/refresh` (rotates the refresh token — the old one stops working), and
-`POST /auth/logout`.
+`PATCH /auth/me` (body `{"accessibilityMode": true|false}` — the one profile field with a Settings
+screen behind it, added in Phase 6), `POST /auth/refresh` (rotates the refresh token — the old one
+stops working), and `POST /auth/logout`.
 
 The permission spine (Phase 1) is also live:
 
@@ -426,14 +450,46 @@ The human layer (Phase 5) is also live:
   medication," "diagnose") with a 400 — verified live, and honestly limited (it won't catch a goal
   naming an actual drug, since that would need a drug-name dictionary this project doesn't have)
 
+`apps/mobile` is also live (Phase 6) — a real Expo/React Native app, not a mockup:
+
+```bash
+cd apps/mobile
+cp .env.example .env    # EXPO_PUBLIC_API_URL, defaults to http://localhost:8787
+pnpm install             # from the repo root, if you haven't already
+npx expo start --web     # or --android / --ios with a device or simulator attached
+```
+
+- **Login → Dashboard → Settings**, all wired to the real API above, not sample data: login calls
+  `POST /auth/login`; the dashboard calls `GET /doses/today` and `GET /medications/adherence` and
+  posts real `POST /doses/:doseId/record` calls; Settings calls `PATCH /auth/me`.
+- **Senior/Accessibility Mode** is a real, working toggle, not a screenshot: `AccessibilityProvider`
+  (`src/accessibility/AccessibilityContext.tsx`) re-renders the whole tree from
+  `@careconnect/tokens`' `getTokens()` the moment the Settings switch flips, and the switch persists
+  the value to the account via `PATCH /auth/me` — verified in a live browser session: type scale,
+  touch-target size, and contrast all visibly change, and the new value survives a reload.
+- **"Read today's summary aloud"** calls `expo-speech` with a sentence built from the same
+  real dose and adherence data on screen — verified to fire without error in a live browser
+  session (Expo Web routes it through the browser's `SpeechSynthesis` API).
+- **"Mark as taken" is confirmation-gated** (§12 "confirmation dialogs for important actions") by a
+  custom `ConfirmDialog` component, not the native `Alert.alert` — the native dialog can't be resized
+  to the Accessibility Mode scale, so an important action needed a dialog this app actually controls
+  the sizing of. Confirming calls the real `POST /doses/:doseId/record`, and the dose's new status
+  round-trips back into the list.
+- Metro (the bundler) needed two non-default settings to work in this pnpm monorepo, both in
+  `metro.config.js` and both commented in place: `unstable_enableSymlinks` (pnpm's node_modules are
+  symlinks) and a custom `resolveRequest` that strips a trailing `.js` before retrying resolution
+  (packages/core, contracts, and tokens use the modern TypeScript convention of writing relative
+  imports as `./foo.js` pointing at `./foo.ts`, which `tsc`/`vitest` resolve natively but Metro's
+  resolver does not).
+
 ### 5. Run checks
 
 ```bash
 pnpm lint        # eslint
 pnpm typecheck   # tsc --noEmit, every package
-pnpm test        # vitest — 165 tests: safety classifier/validator, policy engine, dose math,
+pnpm test        # vitest — 199 tests: safety classifier/validator, policy engine, dose math,
                  # check-in branching, provider fallback chain, auth crypto, goal-content
-                 # heuristic, drift guards
+                 # heuristic, accessibility tokens (WCAG contrast math), drift guards
 pnpm build       # tsc build, every package
 ```
 
@@ -442,9 +498,12 @@ on every push and pull request.
 
 ### What's not here yet
 
-- `apps/mobile` and `apps/console` are unscaffolded — see their `README.md` stubs for which phase
-  brings each online. On-device reminder delivery waits on `apps/mobile` specifically (see
-  [Platform constraints](#platform-constraints-on-record)).
+- `apps/mobile` has 3 of 18 screens (§16) as of Phase 6 — login, dashboard, settings. The other 15
+  land alongside the phases that give them something real to show (wellness charts in Phase 9,
+  the buddy/coach screens whenever their own phase's UI is scoped, etc.) — see
+  `apps/mobile/README.md`. `apps/console` is still unscaffolded.
+- On-device notification *scheduling* — Phase 7, see the `*` note under
+  [Platform constraints](#platform-constraints-on-record). Text-to-speech read-aloud is live today.
 - The coach dashboard UI (Phase 8) — the data model, authorization, and routes behind it are live
   as of Phase 5.
 - The AI companion's live provider calls are unverified — see the `**` note under
@@ -458,7 +517,13 @@ on every push and pull request.
 ```
 careconnect/
   apps/
-    mobile/            Expo (React Native) — the product (not yet scaffolded, Phase 2+)
+    mobile/            Expo (React Native) — the product. 3/18 screens (§16) as of Phase 6
+      metro.config.js  pnpm-monorepo Metro resolution (symlinks, .js->.ts retry)
+      App.tsx          screen router + AccessibilityProvider
+      src/api/client.ts        thin fetch wrapper, typed against @careconnect/contracts
+      src/accessibility/       AccessibilityProvider — reads @careconnect/tokens
+      src/screens/              LoginScreen, DashboardScreen, SettingsScreen
+      src/components/ConfirmDialog.tsx   token-sized confirmation modal, not native Alert
     console/           Next.js — admin/dev + coach dashboard (not yet scaffolded, Phase 8)
     api/               Hono, dual-runtime — the only process touching the database
       prisma/
@@ -473,7 +538,7 @@ careconnect/
         doses/sweep.ts     closeExpiredDoses() — PENDING/SNOOZED past window -> MISSED
         doses/generate.ts  materializes DoseInstance rows from a ScheduleRule (30-day horizon)
         util/owner.ts       resolveOwnerId() — shared ?userId= resolution for cross-user reads
-        routes/auth.ts          register / login / refresh / logout / me
+        routes/auth.ts          register / login / refresh / logout / me / patch-me (accessibilityMode)
         routes/permissions.ts   grants: list / set / revoke
         routes/privacy.ts       audit log, consent, export, account deletion
         routes/medications.ts   medications, doses, adherence, OCR-draft confirmation gate
@@ -494,7 +559,12 @@ careconnect/
       src/ai/            callWithFallback() provider-chain orchestration — implemented
       src/human/         default grant categories, checkGoalContent() non-medical heuristic — implemented
     contracts/         zod schemas + typed client shared by both apps
-    tokens/            design tokens, including the accessibility scale — Phase 6
+      src/buddy.ts, coach.ts   Phase 5 request/response shapes
+    tokens/            design tokens — implemented (Phase 6)
+      src/contrast.ts    contrastRatio() (WCAG relative-luminance math) + the two color palettes
+      src/typography.ts  two fixed type scales, not a runtime multiplier
+      src/touchTarget.ts, motion.ts   touch-target sizing, motion-preference tokens
+      src/index.ts       getTokens(mode) — the one function apps/mobile's root calls
   docs/
     BUILD_PLAN.md      full phase-by-phase build plan, mapped to spec sections §1–§21
     AI_PROVIDERS.md    verified free-tier limits and model IDs

@@ -25,4 +25,17 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Metro (like most bundler configs) loads this directly via Node's CJS
+    // loader, not through the TypeScript/ESM pipeline the rest of the repo
+    // uses — require()/module.exports/__dirname are correct here, not a
+    // lint violation.
+    files: ["**/metro.config.js"],
+    languageOptions: {
+      globals: { require: "readonly", module: "writable", __dirname: "readonly" },
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
 );

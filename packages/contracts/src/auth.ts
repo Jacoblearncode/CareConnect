@@ -31,6 +31,17 @@ export const refreshRequestSchema = z.object({
 });
 export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 
+/**
+ * Only Senior/Accessibility Mode is settable here (§12): it's the one
+ * profile field a Phase 6 client needs to persist, so the endpoint stays
+ * scoped to what's actually wired up rather than guessing at a general
+ * profile-edit surface no screen exists for yet.
+ */
+export const updateMeRequestSchema = z.object({
+  accessibilityMode: z.boolean(),
+});
+export type UpdateMeRequest = z.infer<typeof updateMeRequestSchema>;
+
 export const authUserSchema = z.object({
   id: z.string().uuid(),
   email: z.string().email(),

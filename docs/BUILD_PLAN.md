@@ -8,9 +8,10 @@ See the root [`README.md`](../README.md) for the product overview, current statu
 summary — including "Repository structure," which reflects what's actually built today. This
 document describes the intended architecture and stays stable as implementation proceeds.
 
-**Status: Phase 5 (human layer) complete.** Phases 0-5 are implemented and tested: auth, the
-permission spine, medication management, wellness, the AI companion, and now buddy relationships and
-the coach data model. The safety pipeline (§18) is real code, not prompt engineering —
+**Status: Phase 6 (accessibility) complete.** Phases 0-6 are implemented and tested: auth, the
+permission spine, medication management, wellness, the AI companion, the human layer, and now
+accessibility — the first phase with a real UI behind it. The safety pipeline (§18) is real code,
+not prompt engineering —
 `classifyInput()`, `validateOutput()`, `toneDirective()`, and `escalation.config.ts` are pure
 functions in `packages/core/src/safety`, backed by 141 tests. `CRISIS` and `DOSAGE_CHANGE` inputs
 never reach a model at all; they resolve to a fixed response before "context retrieval" is even
@@ -32,7 +33,23 @@ accountability goals, and the coach data model — directory, requests, notes, a
 The default-grant and consent-direction decisions are in §3.7 below; all of it is verified live
 against seeded accounts, not just typechecked, including the revocation path (removing a buddy or
 ending a coach link sets the associated grants to `NONE` and immediately locks out further activity
-on that link) and the email-invite-then-register reconciliation. Phase 6 (accessibility) is next.
+on that link) and the email-invite-then-register reconciliation.
+
+Phase 6 scaffolds `apps/mobile` — the first phase to need a real UI, since Senior/Accessibility Mode
+(type scale, touch targets, contrast, motion, TTS read-aloud, confirmation dialogs) doesn't exist
+without a screen to attach it to. Rather than build tokens nobody consumes, it stands up a minimal
+but genuinely working Expo app (login → dashboard → settings, all wired to the live API) and puts
+the accessibility layer where it actually belongs: `packages/tokens`' `getTokens(mode)` swaps four
+token groups at the root of one component tree, and every value is asserted, not eyeballed — the
+Accessibility Mode color pairs are checked against the real WCAG relative-luminance formula
+(`contrastRatio()`, `packages/tokens/src/contrast.ts`) and required to clear AAA (7:1), not just AA.
+Verified live in a browser (Expo Web): the toggle in Settings restyles the whole app immediately,
+persists to the account via the new `PATCH /auth/me`, and survives a reload; the dashboard's
+"Read today's summary aloud" button calls `expo-speech` without error against real dose/adherence
+data; "Mark as taken" is gated by a custom `ConfirmDialog` (not the native `Alert`, which can't be
+resized to the accessibility scale) and the confirmed action round-trips through the real
+`POST /doses/:doseId/record`. See §3.8 below for the full design-decision writeup, including the two
+Metro/pnpm resolution issues that had to be fixed before any of this would bundle at all.
 
 ---
 
@@ -170,6 +187,16 @@ single component tree. Duplicating 18 screens into "senior versions" guarantees 
 diverge. Read-aloud, voice medication confirmation, and confirmation dialogs for important actions
 attach to the same components.
 
+**As implemented (Phase 6):** `getTokens(mode)` (`packages/tokens/src/index.ts`) is that single
+swap point, returning four token groups — type, touch target, contrast, motion — from one call.
+`apps/mobile`'s `AccessibilityProvider` calls it at the root and every screen reads from
+`useAccessibility()`; nothing hardcodes a font size, color, or touch-target size. The contrast pairs
+aren't just picked to look higher-contrast — `contrastRatio()` implements the actual WCAG
+relative-luminance formula, and a test asserts every Accessibility Mode pair clears AAA (7:1), not
+merely AA (4.5:1), including "muted" text (kept dark rather than lightened, since a lighter
+secondary tone is exactly the low-contrast pattern this mode exists to remove). §3.8 covers the rest
+of what Phase 6 actually built.
+
 ### 3.6 The check-in flow is a function, not a form (§7)
 
 §7 gives one worked example (mood, via a 5-emoji scale) and otherwise only says to ask "only
@@ -214,6 +241,58 @@ prescription language — the same style and the same honesty as the AI safety c
 "stop taking your medication" and rejects it with a 400; it does not catch "stop taking metformin,"
 because matching an actual drug name would require a drug-name dictionary this project doesn't have.
 That gap is documented in the function itself, not glossed over.
+
+### 3.8 Phase 6 is the first phase with a UI, and it isn't a mockup
+
+Every phase through 5 shipped as API + tests, verified with curl against a running server. §12's
+requirements — large fonts, big touch targets, high contrast, reduced motion, read-aloud,
+confirmation dialogs — don't have a meaningful home without a screen, so Phase 6 scaffolds
+`apps/mobile` (Expo/React Native) rather than deferring the whole phase to whenever the mobile app
+was otherwise going to start. The scope is deliberately narrow: three screens (login, dashboard,
+settings), not all 18 — enough to make every §12 requirement real and demoable, not enough to front-
+run the phases that own the other screens' actual content.
+
+**A few decisions this forced, made honestly rather than silently:**
+
+- **No native `Alert.alert` for confirmations.** The native dialog is OS chrome — its text and
+  buttons can't be resized to the Accessibility Mode scale. `ConfirmDialog`
+  (`apps/mobile/src/components/ConfirmDialog.tsx`) is a custom `Modal` sized entirely from
+  `useAccessibility()`'s tokens, used for "mark dose as taken" as the one important, hard-to-reverse
+  action Phase 6's scope touches.
+- **`PATCH /auth/me` is new.** Persisting the Accessibility Mode toggle to the account (so it
+  follows the user across devices, not just this session) needed a write path that didn't exist —
+  every prior phase's screens were read-heavy enough that `GET /auth/me` sufficed. Scoped to exactly
+  the one field a shipped screen needs (`{"accessibilityMode": boolean}`), not a general profile-edit
+  endpoint speculatively built ahead of a screen that would use it.
+- **CORS is new.** No client had ever run in a browser origin different from the API's before — curl
+  doesn't enforce CORS. `apps/api` now sends `Access-Control-Allow-*` headers
+  (`hono/cors`, wired in `app.ts`), configurable via `CORS_ORIGINS` and defaulting to `*`. That
+  default is deliberate, not an oversight: auth here is a bearer token, not a cookie, so an open CORS
+  policy doesn't hand a malicious origin an ambient credential the way it would for cookie-based
+  auth — the browser will still send the token only where the client code puts it. A real deployment
+  sets `CORS_ORIGINS` to its actual client origins regardless, the same "safe default, configurable
+  for production" pattern as escalation guidance (§4 below).
+- **Two Metro/pnpm resolution fixes, neither optional.** Metro (the bundler) doesn't natively
+  support pnpm's symlinked `node_modules` layout the way Node's own resolver does, and separately
+  doesn't understand the modern TypeScript convention — used throughout `packages/core`,
+  `contracts`, and `tokens` — of writing a relative import as `./foo.js` when the real file is
+  `./foo.ts` (`tsc`/`vitest` resolve this fine under `moduleResolution: "Bundler"`; Metro's resolver
+  does not). `metro.config.js` fixes both: `unstable_enableSymlinks` plus keeping Metro's *default*
+  hierarchical module lookup (turning it off — the usual advice for hoisted-node_modules monorepos —
+  actually breaks pnpm's nested-symlink resolution instead of fixing it) handles the first; a custom
+  `resolveRequest` that retries with the trailing `.js` stripped handles the second. Both are
+  commented in place in the file, since the failure mode without them (a cryptic
+  `UnableToResolveError` deep in a transitive dependency) is exactly the kind of thing worth saving
+  the next person the debugging session.
+- **Session persistence is out of scope.** The access token lives in memory
+  (`apps/mobile/src/api/client.ts`); closing the app requires logging in again. Real device-local
+  persistence (`expo-secure-store` or similar) is a follow-up, not a Phase 6 requirement — §12 is
+  about accessibility, not session UX, and adding a persistence layer un-asked-for would be exactly
+  the kind of scope creep this project has avoided everywhere else.
+
+All of the above — the toggle's visible effect, its persistence across a reload, the confirmation
+dialog's content and outcome, the read-aloud call completing without error — was verified in a real
+headless-Chromium session against the live API (Expo Web), not just typechecked.
 
 ---
 
@@ -326,8 +405,11 @@ environment this project has run in — see the `**` note in README "Platform co
 **Delivers Essential 9 (buddy system).**
 
 ### Phase 6 — Accessibility (§2, §12)
-- Token layer: type scale, touch targets, contrast, reduced motion.
-- Text-to-speech read-aloud; confirmation dialogues for important actions.
+- Token layer: type scale, touch targets, contrast (WCAG AAA), reduced motion (`packages/tokens`).
+- `apps/mobile` scaffolded — login, dashboard, settings — the minimum real UI for the above to
+  attach to and be demoed, not a mockup (§3.8 above).
+- Text-to-speech read-aloud (`expo-speech`) on the dashboard; a token-sized confirmation dialog
+  (not the native `Alert`) gates marking a dose taken.
 
 **Delivers Essential 10 (accessibility mode).**
 
