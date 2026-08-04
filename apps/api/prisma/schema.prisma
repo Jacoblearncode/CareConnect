@@ -71,6 +71,8 @@ model User {
   auditLogsAsActor  AuditLog[] @relation("AuditActor")
   auditLogsAsTarget AuditLog[] @relation("AuditTarget")
 
+  consentRecords ConsentRecord[]
+
   @@index([email])
 }
 
@@ -107,6 +109,28 @@ model AuditLog {
   @@index([actorUserId])
   @@index([targetUserId])
   @@index([createdAt])
+}
+
+/// One row per (user, consentType); overwritten on change, not appended —
+/// the *current* consent state, with history captured by the AuditLog entry
+/// written alongside every change (§14 "explicit consent").
+enum ConsentType {
+  TERMS_AND_PRIVACY
+  AI_PROCESSING
+  DATA_SHARING_RESEARCH
+}
+
+model ConsentRecord {
+  id        String      @id @default(uuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      ConsentType
+  granted   Boolean
+  updatedAt DateTime    @updatedAt
+  createdAt DateTime    @default(now())
+
+  @@unique([userId, type])
+  @@index([userId])
 }
 
 // ---------------------------------------------------------------------------

@@ -221,7 +221,7 @@ Full detail, including which spec section each phase satisfies, is in
 | Phase | Delivers | Status |
 | --- | --- | --- |
 | 0 — Foundation | Monorepo, Prisma schema, seed data, auth | **Complete** |
-| 1 — Permission spine | Grant matrix, audit log, consent/export/delete | Not started |
+| 1 — Permission spine | Grant matrix, audit log, consent/export/delete | **Complete** |
 | 2 — Medication | CRUD, dose state machine, adherence, reminders, OCR-draft gate | Not started |
 | 3 — Wellness | Health metrics (11 types), adaptive daily check-in | Not started |
 | 4 — AI companion & safety | Full safety pipeline, escalation, adversarial test suite | Not started |
@@ -317,16 +317,28 @@ curl http://localhost:8787/health
 # {"status":"ok"}
 ```
 
-The full auth flow is live: `POST /auth/register`, `POST /auth/login`, `GET /auth/me` (bearer
-token), `POST /auth/refresh` (rotates the refresh token — the old one stops working), and
+The auth flow is live: `POST /auth/register`, `POST /auth/login`, `GET /auth/me` (bearer token),
+`POST /auth/refresh` (rotates the refresh token — the old one stops working), and
 `POST /auth/logout`.
+
+The permission spine (Phase 1) is also live:
+
+- `GET /permissions/grants` — who can see my data, and what (the owner side of the grant matrix)
+- `GET /permissions/shared-with-me` — what I can see of other people's data (the grantee side)
+- `PUT /permissions/grants` / `DELETE /permissions/grants?granteeId=&category=` — set or revoke a
+  grant; requires an active buddy or coach relationship with the grantee first
+- `GET /privacy/audit-log` — a user's own audit trail
+- `GET` / `POST /privacy/consent` — read or set consent by type
+- `POST /privacy/export` — a synchronous JSON export of everything the user owns
+- `DELETE /privacy/account` (body `{"confirm":"DELETE"}`) — anonymizing account deletion: personal
+  health data is hard-deleted, relationships are marked inactive, identity fields are scrubbed
 
 ### 5. Run checks
 
 ```bash
 pnpm lint        # eslint
 pnpm typecheck   # tsc --noEmit, every package
-pnpm test        # vitest, currently packages/core's auth unit tests
+pnpm test        # vitest — policy engine, auth crypto, category-drift guard
 pnpm build       # tsc build, every package
 ```
 
@@ -337,8 +349,9 @@ on every push and pull request.
 
 - `apps/mobile` and `apps/console` are unscaffolded — see their `README.md` stubs for which phase
   brings each online.
-- Only auth routes exist on the API. Medication, wellness, buddy, coach, and AI companion routes
-  arrive in Phases 1–5 per the [Roadmap](#roadmap).
+- Medication, wellness, buddy, coach, and AI companion routes arrive in Phases 2–5 per the
+  [Roadmap](#roadmap). The permission gate they'll route every read through
+  (`apps/api/src/policy/gate.ts`) is built and tested now, ahead of having data to protect.
 - The AI safety adversarial test suite referenced in [AI safety](#ai-safety) is written in Phase 4.
 
 ---
@@ -359,11 +372,14 @@ careconnect/
         entry.node.ts  Node dev/deploy entry point
         entry.worker.ts  Cloudflare Workers entry point
         db.node.ts / db.worker.ts  Prisma driver-adapter selection per runtime
-        routes/auth.ts   register / login / refresh / logout / me
+        policy/gate.ts   DB-backed assertCanView() — every future data route calls this first
+        routes/auth.ts        register / login / refresh / logout / me
+        routes/permissions.ts   grants: list / set / revoke
+        routes/privacy.ts       audit log, consent, export, account deletion
   packages/
     core/              domain logic — pure TypeScript, no I/O
       src/auth/          password hashing (PBKDF2/WebCrypto), JWT sign/verify — implemented
-      src/policy/        permission engine (§10, §14) — Phase 1
+      src/policy/        canView() grant-matrix decision function (§10, §14) — implemented
       src/doses/         dose state machine + adherence math (§5) — Phase 2
       src/safety/        AI guardrails, input and output (§15, §18) — Phase 4
       src/ai/            provider abstraction + fallback chain — Phase 4

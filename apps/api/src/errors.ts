@@ -18,4 +18,12 @@ export const Errors = {
   invalidRefreshToken: () =>
     new AppError(401, "invalid_refresh_token", "Refresh token is invalid or expired."),
   validation: (message: string) => new AppError(400, "validation_error", message),
+  forbidden: () => new AppError(403, "forbidden", "You don't have access to this."),
+  notFound: (what: string) => new AppError(404, "not_found", `${what} not found.`),
+  noRelationship: () =>
+    new AppError(
+      400,
+      "no_relationship",
+      "You can only grant access to someone you have an active buddy or coach relationship with.",
+    ),
 };
