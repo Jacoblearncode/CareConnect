@@ -8,13 +8,16 @@ See the root [`README.md`](../README.md) for the product overview, current statu
 summary — including "Repository structure," which reflects what's actually built today. This
 document describes the intended architecture and stays stable as implementation proceeds.
 
-**Status: Phase 2 (Medication) complete.** Monorepo, full Prisma schema, seed data, auth, the
-permission spine (Phase 1), and medication management (Phase 2) are implemented and tested:
-medication CRUD, the materialized dose state machine with a lazy sweep that closes overdue doses to
-MISSED, adherence rollups, and the MedicationDraft confirmation gate — the first routes to actually
-call `assertCanView()`, proven with buddy/coach access scoped correctly by category (`MEDICATIONS`
-vs `ADHERENCE`). On-device reminder *delivery* is out of scope until `apps/mobile` exists — the data
-it would fire from is ready now. Phase 3 (Wellness) is next.
+**Status: Phase 3 (Wellness) complete.** Monorepo, full Prisma schema, seed data, auth, the
+permission spine (Phase 1), medication management (Phase 2), and wellness (Phase 3) are implemented
+and tested: medication CRUD, the materialized dose state machine, adherence rollups, the
+MedicationDraft confirmation gate, all 11 §6 health-metric types, and the adaptive daily check-in
+(§7). Two permission-model refinements came out of Phase 3, proven against live seeded data: metric
+visibility is resolved per-type (`MOOD` vs `WELLNESS_METRICS` are independent grants, so a buddy can
+see heart rate without seeing mood, or the reverse), and `gate.ts` gained a non-throwing
+`canViewCategory()` alongside `assertCanView()` for requests that legitimately span more than one
+category. On-device reminder *delivery* is out of scope until `apps/mobile` exists — the data it
+would fire from is ready now. Phase 4 (AI companion & safety) is next.
 
 ---
 
@@ -108,6 +111,13 @@ Open questions this design settles, which the specification leaves implicit:
   Phase 5), not as a later add-on.
 - Revoking a coach ends future access; anything already exported is recorded in the audit log
   rather than pretended to be retractable.
+- A single row type can span two categories, resolved per-row rather than per-table. `HealthMetric`
+  (§6) holds 11 metric types under one model, but `MOOD` and the other ten are independently
+  grantable — `metricCategoryFor(type)` (`packages/core/src/wellness`) picks the category per row.
+  A request spanning multiple categories (e.g. "all my metrics") isn't all-or-nothing: `gate.ts`
+  exposes both a throwing `assertCanView()` for single-category endpoints and a non-throwing
+  `canViewCategory()` for these, so the caller returns whichever categories the actor actually holds
+  instead of a 403 that hides data the actor is entitled to.
 
 Sensitive actions append to an immutable audit log (§14).
 
@@ -144,6 +154,19 @@ Senior/Accessibility Mode swaps type scale, touch-target size, contrast, and mot
 single component tree. Duplicating 18 screens into "senior versions" guarantees the two copies
 diverge. Read-aloud, voice medication confirmation, and confirmation dialogs for important actions
 attach to the same components.
+
+### 3.6 The check-in flow is a function, not a form (§7)
+
+§7 gives one worked example (mood, via a 5-emoji scale) and otherwise only says to ask "only
+relevant questions rather than forcing users through a long questionnaire" — it doesn't specify the
+branching rule. `nextCheckInQuestion(answers, context)` (`packages/core/src/wellness`) is one
+deliberate, testable implementation of that requirement, not the only possible one: mood is always
+first; a low mood (1-2 of 5) branches toward understanding why (stress, pain, energy) and closes
+early; a neutral-or-better mood branches toward the routine-tracking fields instead (energy, sleep
+quality, medication adherence — skipped entirely if the user has no active medication — physical
+activity). The function is pure and stateless: the API calls it once per answer submitted, and the
+client just keeps asking until it returns `null`. This is what makes the flow read as a short
+conversation rather than a fixed-length form.
 
 ---
 

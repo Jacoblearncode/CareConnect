@@ -223,7 +223,7 @@ Full detail, including which spec section each phase satisfies, is in
 | 0 — Foundation | Monorepo, Prisma schema, seed data, auth | **Complete** |
 | 1 — Permission spine | Grant matrix, audit log, consent/export/delete | **Complete** |
 | 2 — Medication | CRUD, dose state machine, adherence, reminders, OCR-draft gate | **Complete**\* |
-| 3 — Wellness | Health metrics (11 types), adaptive daily check-in | Not started |
+| 3 — Wellness | Health metrics (11 types), adaptive daily check-in | **Complete** |
 | 4 — AI companion & safety | Full safety pipeline, escalation, adversarial test suite | Not started |
 | 5 — Human layer | Buddy invites, messaging, accountability; coach data model | Not started |
 | 6 — Accessibility | Token-layer Senior/Accessibility Mode, TTS, confirmations | Not started |
@@ -353,12 +353,27 @@ Medication (Phase 2) is also live:
 - All of the above accept `?userId=` to view another user's data as a buddy/coach — routed through
   `assertCanView()` per request, category by category
 
+Wellness (Phase 3) is also live:
+
+- `GET/POST /wellness/metrics`, `DELETE /wellness/metrics/:id` — all 11 metric types from §6, each
+  carrying a mandatory `source: SELF_REPORTED | DEVICE`. A metric's required permission category
+  depends on its own `type`: `MOOD` entries need a `MOOD` grant, everything else needs
+  `WELLNESS_METRICS` — a buddy or coach can be given one without the other, so an "all metrics"
+  request returns whichever categories they actually hold rather than an all-or-nothing 403
+- `GET /checkins/today`, `POST /checkins/today` (body `{"field": "...", "value": 1-5}`) — the daily
+  check-in (§7), answered one field at a time. `mood` is always first; a low mood (1-2) branches to
+  `stress`/`pain`/`energy` then closes, a better mood branches to the routine-tracking fields
+  instead (skipping `medicationAdherence` if the user has no active medications) — never every
+  question every day. Each response includes `nextQuestion`, so the client just keeps asking until
+  it's `null`
+- `GET /checkins` — history, gated by the `CHECKINS` category
+
 ### 5. Run checks
 
 ```bash
 pnpm lint        # eslint
 pnpm typecheck   # tsc --noEmit, every package
-pnpm test        # vitest — policy engine, dose math, auth crypto, drift guards
+pnpm test        # vitest — policy engine, dose math, check-in branching, auth crypto, drift guards
 pnpm build       # tsc build, every package
 ```
 
@@ -370,9 +385,9 @@ on every push and pull request.
 - `apps/mobile` and `apps/console` are unscaffolded — see their `README.md` stubs for which phase
   brings each online. On-device reminder delivery waits on `apps/mobile` specifically (see
   [Platform constraints](#platform-constraints-on-record)).
-- Wellness, buddy, coach, and AI companion routes arrive in Phases 3–5 per the
-  [Roadmap](#roadmap). The permission gate they'll route every read through
-  (`apps/api/src/policy/gate.ts`) is built and tested now, ahead of having data to protect.
+- Buddy, coach, and AI companion routes arrive in Phases 4–5 per the [Roadmap](#roadmap). The
+  permission gate they'll route every read through (`apps/api/src/policy/gate.ts`) is built and
+  tested now, ahead of most of that data existing.
 - The AI safety adversarial test suite referenced in [AI safety](#ai-safety) is written in Phase 4.
 
 ---
@@ -393,18 +408,21 @@ careconnect/
         entry.node.ts  Node dev/deploy entry point
         entry.worker.ts  Cloudflare Workers entry point
         db.node.ts / db.worker.ts  Prisma driver-adapter selection per runtime
-        policy/gate.ts   DB-backed assertCanView() — every data route calls this first
+        policy/gate.ts   DB-backed assertCanView() / canViewCategory() — every data route calls one first
         doses/sweep.ts     closeExpiredDoses() — PENDING/SNOOZED past window -> MISSED
         doses/generate.ts  materializes DoseInstance rows from a ScheduleRule (30-day horizon)
+        util/owner.ts       resolveOwnerId() — shared ?userId= resolution for cross-user reads
         routes/auth.ts          register / login / refresh / logout / me
         routes/permissions.ts   grants: list / set / revoke
         routes/privacy.ts       audit log, consent, export, account deletion
         routes/medications.ts   medications, doses, adherence, OCR-draft confirmation gate
+        routes/wellness.ts      health metrics, adaptive daily check-in
   packages/
     core/              domain logic — pure TypeScript, no I/O
       src/auth/          password hashing (PBKDF2/WebCrypto), JWT sign/verify — implemented
       src/policy/        canView() grant-matrix decision function (§10, §14) — implemented
       src/doses/         schedule generation + adherence math (§5) — implemented
+      src/wellness/      metricCategoryFor() (MOOD vs WELLNESS_METRICS split), nextCheckInQuestion() — implemented
       src/safety/        AI guardrails, input and output (§15, §18) — Phase 4
       src/ai/            provider abstraction + fallback chain — Phase 4
     contracts/         zod schemas + typed client shared by both apps

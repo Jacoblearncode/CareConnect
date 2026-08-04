@@ -22,6 +22,7 @@ import { generateDoseInstancesFor } from "../doses/generate.js";
 import { Errors } from "../errors.js";
 import { requireAuth } from "../middleware/auth.js";
 import { assertCanView } from "../policy/gate.js";
+import { resolveOwnerId } from "../util/owner.js";
 
 function toMedicationDto(m: PrismaMedication): Medication {
   return {
@@ -65,11 +66,6 @@ function toDraftDto(d: PrismaMedicationDraft): MedicationDraft {
     createdAt: d.createdAt.toISOString(),
     reviewedAt: d.reviewedAt?.toISOString() ?? null,
   };
-}
-
-/** `?userId=` lets a buddy/coach view someone else's data; defaults to self. Every use is followed by an assertCanView call. */
-function resolveOwnerId(c: { req: { query: (k: string) => string | undefined }; var: { userId?: string } }): string {
-  return c.req.query("userId") ?? (c.var.userId as string);
 }
 
 export function registerMedicationRoutes(app: Hono<AppEnv>): void {

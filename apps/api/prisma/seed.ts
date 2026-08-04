@@ -1,5 +1,5 @@
 import { auth as coreAuth, doses as coreDoses } from "@careconnect/core";
-import { PrismaClient } from "@prisma/client";
+import { MetricSource, MetricType, PrismaClient } from "@prisma/client";
 
 /**
  * Demo/seed data (§21 "seed/demo data" deliverable). Idempotent: wipes and
@@ -145,62 +145,67 @@ async function seedMedication(userId: string, spec: MedicationSpec, timezone: st
   return medication;
 }
 
+interface MetricSpec {
+  type: MetricType;
+  unit: string;
+  value: () => number;
+  valueSecondary?: () => number;
+  source: () => MetricSource;
+}
+
+const deviceOrSelfReported = (deviceChance: number): (() => MetricSource) =>
+  () => (rand() < deviceChance ? "DEVICE" : "SELF_REPORTED");
+
+// All 11 types from §6, so the MOOD-vs-WELLNESS_METRICS permission category
+// split (packages/core/src/wellness/types.ts) has real seeded data on both
+// sides to test against, not just the 5 types earlier phases happened to use.
+const METRIC_SPECS: MetricSpec[] = [
+  { type: "HEART_RATE", unit: "bpm", value: () => randInt(62, 88), source: deviceOrSelfReported(0.5) },
+  {
+    type: "BLOOD_PRESSURE",
+    unit: "mmHg",
+    value: () => randInt(112, 135),
+    valueSecondary: () => randInt(72, 88),
+    source: () => "SELF_REPORTED",
+  },
+  { type: "BLOOD_GLUCOSE", unit: "mg/dL", value: () => randInt(85, 140), source: deviceOrSelfReported(0.5) },
+  { type: "WEIGHT", unit: "kg", value: () => Number((60 + rand() * 30).toFixed(1)), source: () => "SELF_REPORTED" },
+  {
+    type: "TEMPERATURE",
+    unit: "°C",
+    value: () => Number((36.3 + rand() * 0.9).toFixed(1)),
+    source: () => "SELF_REPORTED",
+  },
+  {
+    type: "SLEEP_HOURS",
+    unit: "hours",
+    value: () => Number((5.5 + rand() * 3).toFixed(1)),
+    source: deviceOrSelfReported(0.7),
+  },
+  { type: "STEPS", unit: "steps", value: () => randInt(1500, 9500), source: () => "DEVICE" },
+  { type: "EXERCISE_MINUTES", unit: "minutes", value: () => randInt(0, 60), source: deviceOrSelfReported(0.6) },
+  { type: "HYDRATION_ML", unit: "ml", value: () => randInt(900, 2400), source: () => "SELF_REPORTED" },
+  { type: "MOOD", unit: "1-5", value: () => randInt(2, 5), source: () => "SELF_REPORTED" },
+  { type: "PAIN_LEVEL", unit: "1-5", value: () => randInt(1, 3), source: () => "SELF_REPORTED" },
+];
+
 async function seedHealthMetrics(userId: string) {
   const now = Date.now();
   for (let dayOffset = HISTORY_DAYS; dayOffset >= 0; dayOffset--) {
     const recordedAt = new Date(now - dayOffset * DAY_MS);
-
-    await prisma.healthMetric.create({
-      data: {
-        userId,
-        type: "HEART_RATE",
-        value: randInt(62, 88),
-        unit: "bpm",
-        source: rand() < 0.5 ? "DEVICE" : "SELF_REPORTED",
-        recordedAt,
-      },
-    });
-    await prisma.healthMetric.create({
-      data: {
-        userId,
-        type: "BLOOD_PRESSURE",
-        value: randInt(112, 135),
-        valueSecondary: randInt(72, 88),
-        unit: "mmHg",
-        source: "SELF_REPORTED",
-        recordedAt,
-      },
-    });
-    await prisma.healthMetric.create({
-      data: {
-        userId,
-        type: "SLEEP_HOURS",
-        value: Number((5.5 + rand() * 3).toFixed(1)),
-        unit: "hours",
-        source: rand() < 0.7 ? "DEVICE" : "SELF_REPORTED",
-        recordedAt,
-      },
-    });
-    await prisma.healthMetric.create({
-      data: {
-        userId,
-        type: "STEPS",
-        value: randInt(1500, 9500),
-        unit: "steps",
-        source: "DEVICE",
-        recordedAt,
-      },
-    });
-    await prisma.healthMetric.create({
-      data: {
-        userId,
-        type: "HYDRATION_ML",
-        value: randInt(900, 2400),
-        unit: "ml",
-        source: "SELF_REPORTED",
-        recordedAt,
-      },
-    });
+    for (const spec of METRIC_SPECS) {
+      await prisma.healthMetric.create({
+        data: {
+          userId,
+          type: spec.type,
+          value: spec.value(),
+          valueSecondary: spec.valueSecondary ? spec.valueSecondary() : null,
+          unit: spec.unit,
+          source: spec.source(),
+          recordedAt,
+        },
+      });
+    }
   }
 }
 

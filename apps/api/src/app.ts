@@ -7,6 +7,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { registerMedicationRoutes } from "./routes/medications.js";
 import { registerPermissionRoutes } from "./routes/permissions.js";
 import { registerPrivacyRoutes } from "./routes/privacy.js";
+import { registerWellnessRoutes } from "./routes/wellness.js";
 
 export interface AppDeps {
   db: PrismaClient;
@@ -35,6 +36,7 @@ export function createApp(deps: AppDeps) {
   registerMedicationRoutes(app);
   registerPermissionRoutes(app);
   registerPrivacyRoutes(app);
+  registerWellnessRoutes(app);
 
   return app;
 }
