@@ -8,16 +8,22 @@ See the root [`README.md`](../README.md) for the product overview, current statu
 summary — including "Repository structure," which reflects what's actually built today. This
 document describes the intended architecture and stays stable as implementation proceeds.
 
-**Status: Phase 3 (Wellness) complete.** Monorepo, full Prisma schema, seed data, auth, the
-permission spine (Phase 1), medication management (Phase 2), and wellness (Phase 3) are implemented
-and tested: medication CRUD, the materialized dose state machine, adherence rollups, the
-MedicationDraft confirmation gate, all 11 §6 health-metric types, and the adaptive daily check-in
-(§7). Two permission-model refinements came out of Phase 3, proven against live seeded data: metric
-visibility is resolved per-type (`MOOD` vs `WELLNESS_METRICS` are independent grants, so a buddy can
-see heart rate without seeing mood, or the reverse), and `gate.ts` gained a non-throwing
-`canViewCategory()` alongside `assertCanView()` for requests that legitimately span more than one
-category. On-device reminder *delivery* is out of scope until `apps/mobile` exists — the data it
-would fire from is ready now. Phase 4 (AI companion & safety) is next.
+**Status: Phase 4 (AI companion & safety) complete.** Phases 0-4 are implemented and tested: auth,
+the permission spine, medication management, wellness, and now the AI companion. The safety pipeline
+(§18) is real code, not prompt engineering — `classifyInput()`, `validateOutput()`, `toneDirective()`,
+and `escalation.config.ts` are pure functions in `packages/core/src/safety`, backed by 141 tests.
+`CRISIS` and `DOSAGE_CHANGE` inputs never reach a model at all; they resolve to a fixed response
+before "context retrieval" is even entered. Writing the adversarial suite caught five real bugs in
+the classifier/validator (contractions, verb tenses, apostrophes, filler-word gaps) — evidence the
+suite is doing its job, not just padding a count. The provider fallback chain
+(`packages/core/src/ai/chain.ts`) is unit-tested with fakes; the concrete Workers AI / Groq fetch
+calls (`apps/api/src/ai/providers.ts`) are written to spec but unverified against a live endpoint,
+since no environment this project has run in holds real API keys — what's verified live, end to end
+against seeded data, is every safety-critical path: classification, output validation, the
+fall-through to scripted responses, tone adaptation from stored mood, escalation-event creation, and
+the audit trail. Companion conversations are unconditionally self-only — no `DataCategory` exists
+for them, confirmed live against a buddy holding three other broad grants. Phase 5 (human layer —
+buddy invites, messaging, coach data model) is next.
 
 ---
 
@@ -195,18 +201,29 @@ User input
   -> User
 ```
 
-The companion's tool surface is **read-only**. It can read the medication list; it has no write tool
-at all, which is what makes §12's "do not allow voice commands to modify prescriptions" and §15's
-"never change medication dosage" structurally true rather than prompt-dependent.
+**As implemented (Phase 4), the tool surface is narrower than "read-only": it's zero.** The companion
+has no tool-calling surface at all — it cannot invoke anything, read or write. Context (mood, recent
+adherence, active medication names) is gathered server-side and handed to the model as plain text
+*before* the call (`apps/api/src/ai/context.ts`), rather than the model requesting it via a read
+tool. This is what makes §12's "do not allow voice commands to modify prescriptions" and §15's
+"never change medication dosage" true by construction: there's no tool for the model to misuse
+because there's no tool at all, which is a stronger guarantee than a read-only tool would have been.
+
+`CRISIS` and `DOSAGE_CHANGE` inputs never reach the model or the context-retrieval stage — they
+resolve to a fixed, pre-reviewed response the moment the classifier tags them, before "AI response"
+is ever entered. `GENERAL` and `DIAGNOSIS_SEEKING` are the only categories that reach a model, and
+both are still passed through the output validator afterward.
 
 Escalation (§11) is triggered by the input classifier, not by the model's judgement. Emergency
-guidance is **configurable per deployment**: one config module (`packages/core/safety/escalation.config.ts`)
+guidance is **configurable per deployment**: one config module (`packages/core/src/safety/escalation.config.ts`)
 holds a region field and any hotline numbers, defaulting to neutral wording ("contact your local
 emergency services or a healthcare professional") when the region is unset. A deployment sets the
 region via environment variable to get localized numbers without a code change.
 
-**Task before Phase 1 closes:** verify each provider's current free-tier limits and available model
-IDs directly, rather than relying on documentation that may be out of date, then lock the choices.
+Free-tier limits and model IDs were verified directly ahead of Phase 0 closing; see
+`docs/AI_PROVIDERS.md`. The concrete provider calls (`apps/api/src/ai/providers.ts`) are written to
+each API's documented contract but have not been exercised against a live endpoint in any
+environment this project has run in — see the `**` note in README "Platform constraints."
 
 ---
 

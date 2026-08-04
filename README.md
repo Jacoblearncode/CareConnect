@@ -185,10 +185,16 @@ any hotline numbers, defaulting to neutral wording ("contact your local emergenc
 healthcare professional") when unset, so a deployment can add localized numbers via environment
 variable without a code change.
 
-The primary evidence that these rules hold is an **adversarial test suite** (Phase 4) asserting
-response properties for diagnosis-seeking, dosage-change, stop-medication, and crisis-language
-inputs — run against the deterministic classifier/validator described above, not against the model
-in isolation.
+The primary evidence that these rules hold is an **adversarial test suite** (Phase 4, 141 tests
+across `packages/core/src/safety`) asserting response properties for diagnosis-seeking,
+dosage-change, stop-medication, and crisis-language inputs — run against the deterministic
+classifier/validator described above, not against the model in isolation. It's genuinely
+adversarial: writing it caught five real classifier/validator bugs (contraction handling, verb
+tenses, apostrophes in disease names, filler-word gaps) that a smaller or less deliberately
+hostile test set would have missed. `CRISIS` and `DOSAGE_CHANGE` inputs never reach a model at
+all — they resolve to a fixed, pre-reviewed response before the "AI response" pipeline stage is
+even entered, which is stronger than trusting a model (even a validated one) to decline correctly
+every time.
 
 ---
 
@@ -224,7 +230,7 @@ Full detail, including which spec section each phase satisfies, is in
 | 1 — Permission spine | Grant matrix, audit log, consent/export/delete | **Complete** |
 | 2 — Medication | CRUD, dose state machine, adherence, reminders, OCR-draft gate | **Complete**\* |
 | 3 — Wellness | Health metrics (11 types), adaptive daily check-in | **Complete** |
-| 4 — AI companion & safety | Full safety pipeline, escalation, adversarial test suite | Not started |
+| 4 — AI companion & safety | Full safety pipeline, escalation, adversarial test suite | **Complete**\*\* |
 | 5 — Human layer | Buddy invites, messaging, accountability; coach data model | Not started |
 | 6 — Accessibility | Token-layer Senior/Accessibility Mode, TTS, confirmations | Not started |
 | 7 — Dashboard & notifications | "What do I need to do today?" dashboard, quiet hours | Not started |
@@ -246,6 +252,14 @@ Essentials are built end-to-end and properly, before any Advanced item is starte
 - **Voice input likely needs an Expo development build**, not Expo Go, because speech-to-text
   needs a native module. Text-to-speech (read-aloud, §12) works everywhere. Voice input is an
   Advanced item (Phase 9), so this blocks nothing on the Essentials path.
+- **\*\*Phase 4's provider calls are reviewed but not live-verified.** No environment this project
+  has run in has a real `CF_ACCOUNT_ID` or `GROQ_API_KEY` configured, so `createWorkersAiProvider`
+  and `createGroqProvider` (`apps/api/src/ai/providers.ts`) are written against each API's
+  documented REST contract but have never round-tripped a real request. What *is* verified
+  end-to-end, live, against real seeded data: every safety-critical code path — the classifier, the
+  output validator, the fallback-to-scripted-response behavior when a provider is unconfigured or
+  fails, tone adaptation, escalation, and audit logging. Add real keys and re-test before treating
+  the live model calls themselves as verified.
 
 ### Decision log
 
@@ -368,12 +382,28 @@ Wellness (Phase 3) is also live:
   it's `null`
 - `GET /checkins` — history, gated by the `CHECKINS` category
 
+AI companion (Phase 4) is also live — see [AI safety](#ai-safety) for the pipeline itself:
+
+- `POST /companion/messages` (body `{"conversationId"?: "...", "content": "..."}`) — send a message;
+  omit `conversationId` to start a new conversation. Response includes `category` (the classifier's
+  verdict) and `escalated`
+- `GET /companion/conversations`, `GET /companion/conversations/:id/messages` — self-only, always.
+  No `?userId=` parameter exists anywhere in this route file: there's no `DataCategory` for AI
+  conversations, and per README "Buddy visibility," companion content stays private regardless of
+  any grant — verified live against a buddy holding three other broad grants, still 403
+- Every assistant message stores `safetyFlags` (which classifier patterns matched, whether output
+  validation passed) — a per-message, inspectable audit trail, not just a pass/fail log line
+- Tone genuinely comes from the stored check-in `mood`, not the message: sending the identical
+  message with `mood: 1` vs `mood: 5` on file produces the spec's two different worked-example
+  openers verbatim
+
 ### 5. Run checks
 
 ```bash
 pnpm lint        # eslint
 pnpm typecheck   # tsc --noEmit, every package
-pnpm test        # vitest — policy engine, dose math, check-in branching, auth crypto, drift guards
+pnpm test        # vitest — 150 tests: safety classifier/validator, policy engine, dose math,
+                 # check-in branching, provider fallback chain, auth crypto, drift guards
 pnpm build       # tsc build, every package
 ```
 
@@ -385,9 +415,11 @@ on every push and pull request.
 - `apps/mobile` and `apps/console` are unscaffolded — see their `README.md` stubs for which phase
   brings each online. On-device reminder delivery waits on `apps/mobile` specifically (see
   [Platform constraints](#platform-constraints-on-record)).
-- Buddy, coach, and AI companion routes arrive in Phases 4–5 per the [Roadmap](#roadmap). The
-  permission gate they'll route every read through (`apps/api/src/policy/gate.ts`) is built and
+- Buddy and coach routes (invites, messaging, the coach dashboard's data model) arrive in Phase 5.
+  The permission gate they'll route every read through (`apps/api/src/policy/gate.ts`) is built and
   tested now, ahead of most of that data existing.
+- The AI companion's live provider calls are unverified — see the `**` note under
+  [Platform constraints](#platform-constraints-on-record).
 - The AI safety adversarial test suite referenced in [AI safety](#ai-safety) is written in Phase 4.
 
 ---
@@ -417,14 +449,18 @@ careconnect/
         routes/privacy.ts       audit log, consent, export, account deletion
         routes/medications.ts   medications, doses, adherence, OCR-draft confirmation gate
         routes/wellness.ts      health metrics, adaptive daily check-in
+        routes/companion.ts     AI companion messages/conversations, always self-only
+        ai/companion.ts    the §18 pipeline: classify -> [scripted override | context+model+validate]
+        ai/context.ts      read-only context gathering (mood, adherence, active medication names)
+        ai/providers.ts    concrete Workers AI / Groq fetch calls (reviewed, not live-verified — see README)
   packages/
     core/              domain logic — pure TypeScript, no I/O
       src/auth/          password hashing (PBKDF2/WebCrypto), JWT sign/verify — implemented
       src/policy/        canView() grant-matrix decision function (§10, §14) — implemented
       src/doses/         schedule generation + adherence math (§5) — implemented
       src/wellness/      metricCategoryFor() (MOOD vs WELLNESS_METRICS split), nextCheckInQuestion() — implemented
-      src/safety/        AI guardrails, input and output (§15, §18) — Phase 4
-      src/ai/            provider abstraction + fallback chain — Phase 4
+      src/safety/        classifyInput(), validateOutput(), toneDirective(), escalation.config.ts — implemented
+      src/ai/            callWithFallback() provider-chain orchestration — implemented
     contracts/         zod schemas + typed client shared by both apps
     tokens/            design tokens, including the accessibility scale — Phase 6
   docs/
