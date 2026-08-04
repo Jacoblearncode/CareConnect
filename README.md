@@ -18,7 +18,9 @@ phases described in [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md). The full source 
 
 ## Status
 
-**Planning complete, implementation not yet started.** See [Roadmap](#roadmap) for phase status.
+**Phases 0-5 complete: auth, permissions, medication, wellness, AI companion, and the human layer
+(buddies + coach data model) are all implemented, tested, and live-verified against a running
+Postgres database.** See [Roadmap](#roadmap) for phase status.
 
 ---
 
@@ -159,10 +161,12 @@ User input
   → User
 ```
 
-The companion's tool surface is **read-only** — it can read the medication list but has no write
-tool at all, which is what makes "never change medication dosage" (§15) and "do not allow voice
+The companion's tool surface, as built, is narrower than "read-only": it's **zero**. It cannot invoke
+anything, read or write — context (mood, recent adherence, active medication names) is gathered
+server-side and handed to the model as plain text before the call, rather than the model requesting
+it via a tool. That's what makes "never change medication dosage" (§15) and "do not allow voice
 commands to modify prescriptions without explicit confirmation" (§12) structurally true rather than
-dependent on the model behaving.
+dependent on the model behaving — there's no tool for it to misuse because there's no tool at all.
 
 ---
 
@@ -231,7 +235,7 @@ Full detail, including which spec section each phase satisfies, is in
 | 2 — Medication | CRUD, dose state machine, adherence, reminders, OCR-draft gate | **Complete**\* |
 | 3 — Wellness | Health metrics (11 types), adaptive daily check-in | **Complete** |
 | 4 — AI companion & safety | Full safety pipeline, escalation, adversarial test suite | **Complete**\*\* |
-| 5 — Human layer | Buddy invites, messaging, accountability; coach data model | Not started |
+| 5 — Human layer | Buddy invites, messaging, accountability; coach data model | **Complete** |
 | 6 — Accessibility | Token-layer Senior/Accessibility Mode, TTS, confirmations | Not started |
 | 7 — Dashboard & notifications | "What do I need to do today?" dashboard, quiet hours | Not started |
 | **→ 11 Essentials (§19) complete and demoable end-to-end** | | |
@@ -268,7 +272,7 @@ Four decisions were open after the initial architecture pass and are now resolve
 | Decision | Resolution |
 | --- | --- |
 | **API hosting** | Dual-runtime: `apps/api` deploys unmodified to a Node host or to Cloudflare Workers. Enabled by Prisma's Neon serverless driver adapter (HTTP/WebSocket, not raw TCP) and PBKDF2/WebCrypto password hashing (no native binding). See [Data & auth](#data--auth). |
-| **Coach dashboard priority** | Stays in Phase 8, per §19's own categorization. No schema change — the data model still lands in Phase 5; only the dashboard UI is later. |
+| **Coach dashboard priority** | Stays in Phase 8, per §19's own categorization. The data model and authorization landed in Phase 5 (directory, requests, notes, non-medical goals); only the dashboard UI is later. |
 | **Buddy visibility granularity** | Default grant is **clinical detail** (medication names, adherence events, wellness metrics), not just engagement signals. AI companion conversations and notes marked private stay private regardless. Because this default is broader than §9's own example, per-buddy narrowing ships in the same phase as the grant itself (Phase 1/5), not later. |
 | **Emergency escalation copy** | Configurable per deployment. One config module holds a region field and hotline numbers, defaulting to neutral wording when unset. |
 
@@ -397,13 +401,39 @@ AI companion (Phase 4) is also live — see [AI safety](#ai-safety) for the pipe
   message with `mood: 1` vs `mood: 5` on file produces the spec's two different worked-example
   openers verbatim
 
+The human layer (Phase 5) is also live:
+
+- `GET/POST /buddies/invites` — send an invite by `toUserId` or `toEmail`; an email invite before
+  the invitee has an account is reconciled automatically at `POST /auth/register`
+- `POST /buddies/invites/:id/accept|decline|cancel` — accept/decline are the recipient's call,
+  cancel is the sender's; accepting creates the `BuddyLink` and grants clinical-detail visibility
+  (`MEDICATIONS`, `ADHERENCE`, `WELLNESS_METRICS`) **in both directions** — verified live
+- `GET /buddies`, `DELETE /buddies/:id` — list active links; removing one sets both directions'
+  grants to `NONE` and immediately blocks further messages/goals on that link — verified live
+- `GET/POST /buddies/:id/messages` (`type`: `MESSAGE` | `ENCOURAGEMENT` | `CHECKIN_REQUEST`)
+- `GET/POST /buddies/:id/goals`, `PATCH /buddies/:id/goals/:goalId` — accountability goals
+- `GET /coach/directory` — registered coaches and their profile; `PUT /coach/profile` — a coach's
+  own bio/credentials
+- `GET/POST /coach/links` — a patient requesting a listed coach activates immediately (the
+  patient's own request is the consenting act); a coach inviting a patient lands `PENDING` and
+  can't be self-accepted — verified live, a coach calling `accept` on their own invite gets 403
+- `POST /coach/links/:id/accept|end` — only the patient can accept; either side can end, which
+  revokes the patient → coach grant
+- `GET/POST /coach/links/:id/notes` — coach-authored, patient-readable (transparency, not a shared
+  thread)
+- `GET/POST /coach/links/:id/goals`, `PATCH .../goals/:goalId` — non-medical only:
+  `checkGoalContent()` rejects obvious medical language (dosage numbers, "stop taking your
+  medication," "diagnose") with a 400 — verified live, and honestly limited (it won't catch a goal
+  naming an actual drug, since that would need a drug-name dictionary this project doesn't have)
+
 ### 5. Run checks
 
 ```bash
 pnpm lint        # eslint
 pnpm typecheck   # tsc --noEmit, every package
-pnpm test        # vitest — 150 tests: safety classifier/validator, policy engine, dose math,
-                 # check-in branching, provider fallback chain, auth crypto, drift guards
+pnpm test        # vitest — 165 tests: safety classifier/validator, policy engine, dose math,
+                 # check-in branching, provider fallback chain, auth crypto, goal-content
+                 # heuristic, drift guards
 pnpm build       # tsc build, every package
 ```
 
@@ -415,9 +445,8 @@ on every push and pull request.
 - `apps/mobile` and `apps/console` are unscaffolded — see their `README.md` stubs for which phase
   brings each online. On-device reminder delivery waits on `apps/mobile` specifically (see
   [Platform constraints](#platform-constraints-on-record)).
-- Buddy and coach routes (invites, messaging, the coach dashboard's data model) arrive in Phase 5.
-  The permission gate they'll route every read through (`apps/api/src/policy/gate.ts`) is built and
-  tested now, ahead of most of that data existing.
+- The coach dashboard UI (Phase 8) — the data model, authorization, and routes behind it are live
+  as of Phase 5.
 - The AI companion's live provider calls are unverified — see the `**` note under
   [Platform constraints](#platform-constraints-on-record).
 - The AI safety adversarial test suite referenced in [AI safety](#ai-safety) is written in Phase 4.
@@ -450,6 +479,8 @@ careconnect/
         routes/medications.ts   medications, doses, adherence, OCR-draft confirmation gate
         routes/wellness.ts      health metrics, adaptive daily check-in
         routes/companion.ts     AI companion messages/conversations, always self-only
+        routes/buddies.ts       invites, links, messages, accountability goals
+        routes/coach.ts         directory, links, notes, non-medical goals
         ai/companion.ts    the §18 pipeline: classify -> [scripted override | context+model+validate]
         ai/context.ts      read-only context gathering (mood, adherence, active medication names)
         ai/providers.ts    concrete Workers AI / Groq fetch calls (reviewed, not live-verified — see README)
@@ -461,6 +492,7 @@ careconnect/
       src/wellness/      metricCategoryFor() (MOOD vs WELLNESS_METRICS split), nextCheckInQuestion() — implemented
       src/safety/        classifyInput(), validateOutput(), toneDirective(), escalation.config.ts — implemented
       src/ai/            callWithFallback() provider-chain orchestration — implemented
+      src/human/         default grant categories, checkGoalContent() non-medical heuristic — implemented
     contracts/         zod schemas + typed client shared by both apps
     tokens/            design tokens, including the accessibility scale — Phase 6
   docs/

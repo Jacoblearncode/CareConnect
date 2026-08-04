@@ -4,3 +4,4 @@ export * as doses from "./doses/index.js";
 export * as wellness from "./wellness/index.js";
 export * as safety from "./safety/index.js";
 export * as ai from "./ai/index.js";
+export * as human from "./human/index.js";

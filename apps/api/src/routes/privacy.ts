@@ -97,31 +97,55 @@ export function registerPrivacyRoutes(app: Hono<AppEnv>): void {
     const db = c.var.db;
     const userId = c.var.userId as string;
 
-    const [user, medications, healthMetrics, checkIns, grantsGiven, grantsReceived, consent, notificationPrefs] =
-      await Promise.all([
-        db.user.findUnique({
-          where: { id: userId },
-          select: {
-            id: true,
-            email: true,
-            displayName: true,
-            dateOfBirth: true,
-            timezone: true,
-            accessibilityMode: true,
-            createdAt: true,
-          },
-        }),
-        db.medication.findMany({
-          where: { userId },
-          include: { scheduleRules: true, doseInstances: true },
-        }),
-        db.healthMetric.findMany({ where: { userId } }),
-        db.checkIn.findMany({ where: { userId } }),
-        db.permissionGrant.findMany({ where: { ownerId: userId } }),
-        db.permissionGrant.findMany({ where: { granteeId: userId } }),
-        db.consentRecord.findMany({ where: { userId } }),
-        db.notificationPreference.findMany({ where: { userId } }),
-      ]);
+    const [
+      user,
+      medications,
+      healthMetrics,
+      checkIns,
+      grantsGiven,
+      grantsReceived,
+      consent,
+      notificationPrefs,
+      buddyInvitesSent,
+      buddyInvitesReceived,
+      buddyLinks,
+      buddyMessagesSent,
+      accountabilityGoalsCreated,
+      coachLinksAsPatient,
+      coachLinksAsCoach,
+      coachNotesAuthored,
+    ] = await Promise.all([
+      db.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          dateOfBirth: true,
+          timezone: true,
+          accessibilityMode: true,
+          createdAt: true,
+        },
+      }),
+      db.medication.findMany({
+        where: { userId },
+        include: { scheduleRules: true, doseInstances: true },
+      }),
+      db.healthMetric.findMany({ where: { userId } }),
+      db.checkIn.findMany({ where: { userId } }),
+      db.permissionGrant.findMany({ where: { ownerId: userId } }),
+      db.permissionGrant.findMany({ where: { granteeId: userId } }),
+      db.consentRecord.findMany({ where: { userId } }),
+      db.notificationPreference.findMany({ where: { userId } }),
+      db.buddyInvite.findMany({ where: { fromUserId: userId } }),
+      db.buddyInvite.findMany({ where: { toUserId: userId } }),
+      db.buddyLink.findMany({ where: { OR: [{ userAId: userId }, { userBId: userId }] } }),
+      db.buddyMessage.findMany({ where: { senderId: userId } }),
+      db.accountabilityGoal.findMany({ where: { createdByUserId: userId } }),
+      db.coachLink.findMany({ where: { patientUserId: userId } }),
+      db.coachLink.findMany({ where: { coachUserId: userId } }),
+      db.coachNote.findMany({ where: { authorUserId: userId } }),
+    ]);
 
     if (!user) {
       throw Errors.unauthorized();
@@ -141,6 +165,18 @@ export function registerPrivacyRoutes(app: Hono<AppEnv>): void {
         permissions: { granted: grantsGiven, receivedFromOthers: grantsReceived },
         consent,
         notificationPreferences: notificationPrefs,
+        buddies: {
+          invitesSent: buddyInvitesSent,
+          invitesReceived: buddyInvitesReceived,
+          links: buddyLinks,
+          messagesSent: buddyMessagesSent,
+          accountabilityGoalsCreated,
+        },
+        coaching: {
+          linksAsPatient: coachLinksAsPatient,
+          linksAsCoach: coachLinksAsCoach,
+          notesAuthored: coachNotesAuthored,
+        },
       },
       200,
     );

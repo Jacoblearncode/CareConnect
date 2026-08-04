@@ -8,22 +8,31 @@ See the root [`README.md`](../README.md) for the product overview, current statu
 summary — including "Repository structure," which reflects what's actually built today. This
 document describes the intended architecture and stays stable as implementation proceeds.
 
-**Status: Phase 4 (AI companion & safety) complete.** Phases 0-4 are implemented and tested: auth,
-the permission spine, medication management, wellness, and now the AI companion. The safety pipeline
-(§18) is real code, not prompt engineering — `classifyInput()`, `validateOutput()`, `toneDirective()`,
-and `escalation.config.ts` are pure functions in `packages/core/src/safety`, backed by 141 tests.
-`CRISIS` and `DOSAGE_CHANGE` inputs never reach a model at all; they resolve to a fixed response
-before "context retrieval" is even entered. Writing the adversarial suite caught five real bugs in
-the classifier/validator (contractions, verb tenses, apostrophes, filler-word gaps) — evidence the
-suite is doing its job, not just padding a count. The provider fallback chain
-(`packages/core/src/ai/chain.ts`) is unit-tested with fakes; the concrete Workers AI / Groq fetch
-calls (`apps/api/src/ai/providers.ts`) are written to spec but unverified against a live endpoint,
-since no environment this project has run in holds real API keys — what's verified live, end to end
-against seeded data, is every safety-critical path: classification, output validation, the
-fall-through to scripted responses, tone adaptation from stored mood, escalation-event creation, and
-the audit trail. Companion conversations are unconditionally self-only — no `DataCategory` exists
-for them, confirmed live against a buddy holding three other broad grants. Phase 5 (human layer —
-buddy invites, messaging, coach data model) is next.
+**Status: Phase 5 (human layer) complete.** Phases 0-5 are implemented and tested: auth, the
+permission spine, medication management, wellness, the AI companion, and now buddy relationships and
+the coach data model. The safety pipeline (§18) is real code, not prompt engineering —
+`classifyInput()`, `validateOutput()`, `toneDirective()`, and `escalation.config.ts` are pure
+functions in `packages/core/src/safety`, backed by 141 tests. `CRISIS` and `DOSAGE_CHANGE` inputs
+never reach a model at all; they resolve to a fixed response before "context retrieval" is even
+entered. Writing the adversarial suite caught five real bugs in the classifier/validator
+(contractions, verb tenses, apostrophes, filler-word gaps) — evidence the suite is doing its job, not
+just padding a count. The provider fallback chain (`packages/core/src/ai/chain.ts`) is unit-tested
+with fakes; the concrete Workers AI / Groq fetch calls (`apps/api/src/ai/providers.ts`) are written
+to spec but unverified against a live endpoint, since no environment this project has run in holds
+real API keys — what's verified live, end to end against seeded data, is every safety-critical path:
+classification, output validation, the fall-through to scripted responses, tone adaptation from
+stored mood, escalation-event creation, and the audit trail. Companion conversations are
+unconditionally self-only — no `DataCategory` exists for them, confirmed live against a buddy
+holding three other broad grants.
+
+Phase 5 turns the relationship rows that have existed in the schema since Phase 0 into working
+endpoints: buddy invites (by user or by email, reconciled at registration if the invitee signs up
+later), accept/decline/cancel, messaging (message / encouragement / check-in request),
+accountability goals, and the coach data model — directory, requests, notes, and non-medical goals.
+The default-grant and consent-direction decisions are in §3.7 below; all of it is verified live
+against seeded accounts, not just typechecked, including the revocation path (removing a buddy or
+ending a coach link sets the associated grants to `NONE` and immediately locks out further activity
+on that link) and the email-invite-then-register reconciliation. Phase 6 (accessibility) is next.
 
 ---
 
@@ -174,6 +183,38 @@ activity). The function is pure and stateless: the API calls it once per answer 
 client just keeps asking until it returns `null`. This is what makes the flow read as a short
 conversation rather than a fixed-length form.
 
+### 3.7 A relationship's default grant follows whoever can actually consent (§9, §10)
+
+`BuddyLink` has no "patient" role — `userA`/`userB` are symmetric in the schema — so there is no
+structural way to know, from the link alone, which side's data matters more. Acceptance therefore
+grants clinical-detail visibility (`MEDICATIONS`, `ADHERENCE`, `WELLNESS_METRICS`) **in both
+directions**: whichever side later has health data worth sharing already has the buddy granted
+access, and either side can narrow or revoke their own half through the existing Phase 1
+`PUT`/`DELETE /permissions/grants` routes — nothing buddy-specific bypasses that gate.
+
+`CoachLink` is directional (a coach has no medication list of their own), which raises a real
+question the spec doesn't answer: either a coach or a patient can initiate contact, but the grant
+that follows only means something if the *patient* consented to it. Resolving that literally, by
+direction:
+- A patient requesting a listed coach activates the link immediately — the patient's own POST is
+  itself the consenting act, so there's nothing further to wait on.
+- A coach inviting someone as a patient lands `PENDING`; the coach cannot accept their own invite
+  (verified live — a coach trying to accept returns 403), and no grant exists until the patient
+  calls `accept`.
+
+Both directions converge on the same default categories (`ADHERENCE`, `WELLNESS_METRICS`,
+`CHECKINS` — one wider than a buddy's, since a wellness coach's job is explicitly to review
+check-in trends), and ending a coach link (either side can end it) sets those grants to `NONE`,
+matching §3.1's "revoking a coach ends future access."
+
+`CoachGoal`'s schema comment says "non-medical" is enforced in application code, not the schema.
+`checkGoalContent()` (`packages/core/src/human/goal-policy.ts`) is that enforcement, and it is
+deliberately modest: a fixed pattern list for dosage numbers, medication-change verbs, diagnosis and
+prescription language — the same style and the same honesty as the AI safety classifier. It catches
+"stop taking your medication" and rejects it with a 400; it does not catch "stop taking metformin,"
+because matching an actual drug name would require a drug-name dictionary this project doesn't have.
+That gap is documented in the function itself, not glossed over.
+
 ---
 
 ## 4. AI provider strategy — and its safety consequence
@@ -266,7 +307,7 @@ environment this project has run in — see the `**` note in README "Platform co
 
 ### Phase 4 — AI companion and safety (§8, §11, §15, §18)
 - The full pipeline from §4 of this document.
-- Read-only tool boundary.
+- Zero tool-calling surface (§4 above — stronger than the read-only boundary originally planned here).
 - Tone adaptation from the stored check-in value only (§3.4 above).
 - Escalation UI for potentially urgent situations (§11).
 - **Adversarial test suite**: asserted response properties for diagnosis-seeking, dosage-change,
@@ -275,9 +316,12 @@ environment this project has run in — see the `**` note in README "Platform co
 **Delivers Essential 8 (AI wellness companion).**
 
 ### Phase 5 — Human layer (§9, §10)
-- Buddy invitation, accept/decline, messaging, encouragement, accountability goals, check-in
-  requests — every read gated by Phase 1.
-- Coach entity and authorisation modelled here; the coach dashboard UI lands in Phase 8.
+- Buddy invitation (by user or by email, reconciled at registration), accept/decline/cancel,
+  messaging, encouragement, check-in requests, accountability goals — link membership gates every
+  route, and removal revokes the default grant in both directions (§3.7 above).
+- Coach directory, requests, accept/end, notes (coach-authored, patient-readable), and non-medical
+  goals (`checkGoalContent()` gate, §3.7 above). Authorisation modelled here; the coach dashboard UI
+  lands in Phase 8.
 
 **Delivers Essential 9 (buddy system).**
 

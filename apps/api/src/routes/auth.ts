@@ -68,6 +68,14 @@ export function registerAuthRoutes(app: Hono<AppEnv>): void {
       data: { actorUserId: user.id, action: "user.register", targetUserId: user.id },
     });
 
+    // Reconciles a buddy invite sent to this email before the invitee had an
+    // account (Build Plan Phase 5): the invite stays PENDING, but now points
+    // at a real user so the recipient can see and accept it.
+    await db.buddyInvite.updateMany({
+      where: { toEmail: user.email, toUserId: null, status: "PENDING" },
+      data: { toUserId: user.id, toEmail: null },
+    });
+
     const response = await issueTokens(db, c.var.config, user);
     return c.json(response, 201);
   });

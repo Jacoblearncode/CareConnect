@@ -4,6 +4,8 @@ import type { AppEnv } from "./app-env.js";
 import type { AppConfig } from "./env.js";
 import { errorMiddleware } from "./middleware/error.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerBuddyRoutes } from "./routes/buddies.js";
+import { registerCoachRoutes } from "./routes/coach.js";
 import { registerCompanionRoutes } from "./routes/companion.js";
 import { registerMedicationRoutes } from "./routes/medications.js";
 import { registerPermissionRoutes } from "./routes/permissions.js";
@@ -34,6 +36,8 @@ export function createApp(deps: AppDeps) {
   app.get("/health", (c) => c.json({ status: "ok" }));
 
   registerAuthRoutes(app);
+  registerBuddyRoutes(app);
+  registerCoachRoutes(app);
   registerCompanionRoutes(app);
   registerMedicationRoutes(app);
   registerPermissionRoutes(app);

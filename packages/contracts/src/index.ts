@@ -4,3 +4,5 @@ export * from "./privacy.js";
 export * from "./medications.js";
 export * from "./wellness.js";
 export * from "./companion.js";
+export * from "./buddy.js";
+export * from "./coach.js";
