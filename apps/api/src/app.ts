@@ -1,0 +1,34 @@
+import type { PrismaClient } from "@prisma/client";
+import { Hono } from "hono";
+import type { AppEnv } from "./app-env.js";
+import type { AppConfig } from "./env.js";
+import { errorMiddleware } from "./middleware/error.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+
+export interface AppDeps {
+  db: PrismaClient;
+  config: AppConfig;
+}
+
+/**
+ * Runtime-agnostic Hono app (Build Plan §1.1): takes its database client and
+ * config as arguments instead of constructing them, so this file is shared
+ * unmodified by both entry.node.ts and entry.worker.ts.
+ */
+export function createApp(deps: AppDeps) {
+  const app = new Hono<AppEnv>();
+
+  app.use("*", async (c, next) => {
+    c.set("db", deps.db);
+    c.set("config", deps.config);
+    await next();
+  });
+
+  app.onError(errorMiddleware);
+
+  app.get("/health", (c) => c.json({ status: "ok" }));
+
+  registerAuthRoutes(app);
+
+  return app;
+}

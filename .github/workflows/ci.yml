@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: careconnect
+          POSTGRES_PASSWORD: careconnect
+          POSTGRES_DB: careconnect
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U careconnect"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://careconnect:careconnect@localhost:5432/careconnect
+      JWT_ACCESS_SECRET: ci-test-secret-not-for-production
+      ACCESS_TOKEN_TTL_SECONDS: 900
+      REFRESH_TOKEN_TTL_SECONDS: 2592000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Prisma validate
+        run: pnpm --filter @careconnect/api exec prisma validate
+
+      - name: Run migrations
+        run: pnpm --filter @careconnect/api run db:migrate:deploy
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build

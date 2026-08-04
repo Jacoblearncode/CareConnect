@@ -1,0 +1,7 @@
+# Cloudflare Workers deploy target (Build Plan §1.1). Not used for local dev
+# — see entry.node.ts / README "Getting started" for that. Fill in secrets
+# with `wrangler secret put` rather than committing them here.
+name = "careconnect-api"
+main = "src/entry.worker.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]

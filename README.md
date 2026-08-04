@@ -220,7 +220,7 @@ Full detail, including which spec section each phase satisfies, is in
 
 | Phase | Delivers | Status |
 | --- | --- | --- |
-| 0 — Foundation | Monorepo, Prisma schema, seed data, auth | Not started |
+| 0 — Foundation | Monorepo, Prisma schema, seed data, auth | **Complete** |
 | 1 — Permission spine | Grant matrix, audit log, consent/export/delete | Not started |
 | 2 — Medication | CRUD, dose state machine, adherence, reminders, OCR-draft gate | Not started |
 | 3 — Wellness | Health metrics (11 types), adaptive daily check-in | Not started |
@@ -258,13 +258,88 @@ Four decisions were open after the initial architecture pass and are now resolve
 
 ## Getting started
 
-Setup instructions will be added once Phase 0 (Foundation) lands. This section will cover:
+`apps/api` and its auth flow are functional as of Phase 0. `apps/mobile` and `apps/console` don't
+exist yet — this section covers what's runnable today and will grow as each app lands.
 
-- Prerequisites (Node version, package manager, Expo CLI)
-- Environment variables (database URL, JWT secrets, AI provider keys)
-- Database setup and seeding
-- Running `apps/api`, `apps/mobile`, and `apps/console` locally
-- Running the test suite, including the AI safety adversarial suite
+### Prerequisites
+
+- Node.js ≥ 20, [pnpm](https://pnpm.io) 10.x (`corepack enable` will pick up the pinned version
+  from `package.json`)
+- A Postgres 16 database — a local install/cluster, or a free [Neon](https://neon.tech) project
+
+### 1. Install
+
+```bash
+pnpm install
+```
+
+The Prisma client's postinstall step needs to run once; if pnpm prompts about ignored build
+scripts, approve `@prisma/client`, `@prisma/engines`, and `prisma` (already pre-approved via the
+`pnpm.onlyBuiltDependencies` field in the root `package.json`, so a fresh clone shouldn't need to).
+
+### 2. Configure the API
+
+```bash
+cd apps/api
+cp .env.example .env
+```
+
+Edit `.env`:
+
+- `DATABASE_URL` — point at your local Postgres or a Neon connection string.
+- `JWT_ACCESS_SECRET` — generate one with
+  `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`.
+- The AI provider keys are optional — see [`docs/AI_PROVIDERS.md`](docs/AI_PROVIDERS.md). Leaving
+  them blank is fine until Phase 4.
+
+### 3. Migrate and seed the database
+
+```bash
+pnpm db:migrate   # applies apps/api/prisma/migrations
+pnpm db:seed      # wipes and regenerates demo data
+```
+
+Seeding creates three patients, two buddies, and one coach — 30 days of medication, wellness, and
+check-in history each — printed at the end with their shared demo password. See
+`apps/api/prisma/seed.ts` for the exact personas.
+
+### 4. Run the API
+
+```bash
+pnpm dev:api
+```
+
+Starts `apps/api` on `http://localhost:8787` (`entry.node.ts`; see [Architecture](#architecture)
+for the Cloudflare Workers entry point used in production). Confirm it's up:
+
+```bash
+curl http://localhost:8787/health
+# {"status":"ok"}
+```
+
+The full auth flow is live: `POST /auth/register`, `POST /auth/login`, `GET /auth/me` (bearer
+token), `POST /auth/refresh` (rotates the refresh token — the old one stops working), and
+`POST /auth/logout`.
+
+### 5. Run checks
+
+```bash
+pnpm lint        # eslint
+pnpm typecheck   # tsc --noEmit, every package
+pnpm test        # vitest, currently packages/core's auth unit tests
+pnpm build       # tsc build, every package
+```
+
+CI (`.github/workflows/ci.yml`) runs all of the above against a fresh Postgres service container
+on every push and pull request.
+
+### What's not here yet
+
+- `apps/mobile` and `apps/console` are unscaffolded — see their `README.md` stubs for which phase
+  brings each online.
+- Only auth routes exist on the API. Medication, wellness, buddy, coach, and AI companion routes
+  arrive in Phases 1–5 per the [Roadmap](#roadmap).
+- The AI safety adversarial test suite referenced in [AI safety](#ai-safety) is written in Phase 4.
 
 ---
 
@@ -273,14 +348,29 @@ Setup instructions will be added once Phase 0 (Foundation) lands. This section w
 ```
 careconnect/
   apps/
-    mobile/      Expo (React Native) — the product
-    console/     Next.js — admin/dev + coach dashboard
-    api/         Hono on Node — the only process touching the database
+    mobile/            Expo (React Native) — the product (not yet scaffolded, Phase 2+)
+    console/           Next.js — admin/dev + coach dashboard (not yet scaffolded, Phase 8)
+    api/               Hono, dual-runtime — the only process touching the database
+      prisma/
+        schema.prisma  full data model, organized by phase, tagged with spec sections
+        seed.ts        demo data: 3 patients, 2 buddies, 1 coach, 30 days of history
+      src/
+        app.ts         runtime-agnostic Hono app factory
+        entry.node.ts  Node dev/deploy entry point
+        entry.worker.ts  Cloudflare Workers entry point
+        db.node.ts / db.worker.ts  Prisma driver-adapter selection per runtime
+        routes/auth.ts   register / login / refresh / logout / me
   packages/
-    core/        domain logic: policy, doses, safety, ai — pure TypeScript, no I/O
-    contracts/   zod schemas + typed client shared by both apps
-    tokens/      design tokens, including the accessibility scale
+    core/              domain logic — pure TypeScript, no I/O
+      src/auth/          password hashing (PBKDF2/WebCrypto), JWT sign/verify — implemented
+      src/policy/        permission engine (§10, §14) — Phase 1
+      src/doses/         dose state machine + adherence math (§5) — Phase 2
+      src/safety/        AI guardrails, input and output (§15, §18) — Phase 4
+      src/ai/            provider abstraction + fallback chain — Phase 4
+    contracts/         zod schemas + typed client shared by both apps
+    tokens/            design tokens, including the accessibility scale — Phase 6
   docs/
-    BUILD_PLAN.md   full phase-by-phase build plan, mapped to spec sections §1–§21
-  README.md         this file
+    BUILD_PLAN.md      full phase-by-phase build plan, mapped to spec sections §1–§21
+    AI_PROVIDERS.md    verified free-tier limits and model IDs
+  README.md            this file
 ```

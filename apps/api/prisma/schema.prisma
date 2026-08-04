@@ -1,0 +1,550 @@
+// CareConnect data model.
+//
+// Organized to match docs/BUILD_PLAN.md's phase order, and each section is
+// tagged with the spec section(s) it satisfies (see docs/BUILD_PLAN.md for
+// the full spec, referenced there as §1-§21).
+//
+// Dual-runtime note (Build Plan §1.1): this schema is read through Prisma's
+// driver-adapter API (generally available, no preview flag needed as of
+// Prisma 6.x) so the same client works on a Node host (adapter-pg) and on
+// Cloudflare Workers (adapter-neon), because Workers cannot open a raw TCP
+// socket.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Auth & identity (§14 · Phase 0)
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+model User {
+  id                String     @id @default(uuid())
+  email             String     @unique
+  passwordHash      String
+  passwordAlgo      String     @default("pbkdf2-sha256")
+  displayName       String
+  dateOfBirth       DateTime?
+  timezone          String     @default("UTC")
+  accessibilityMode Boolean    @default(false)
+  isCoach           Boolean    @default(false)
+  status            UserStatus @default(ACTIVE)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  sessions         Session[]
+  medications      Medication[]
+  medicationDrafts MedicationDraft[]
+  healthMetrics    HealthMetric[]
+  checkIns         CheckIn[]
+  aiConversations  AiConversation[]
+  escalationEvents EscalationEvent[]
+
+  grantsGiven    PermissionGrant[] @relation("GrantOwner")
+  grantsReceived PermissionGrant[] @relation("GrantGrantee")
+
+  buddyInvitesSent     BuddyInvite[]  @relation("InviteFrom")
+  buddyInvitesReceived BuddyInvite[]  @relation("InviteTo")
+  buddyLinksAsA        BuddyLink[]    @relation("BuddyUserA")
+  buddyLinksAsB        BuddyLink[]    @relation("BuddyUserB")
+  buddyMessagesSent    BuddyMessage[]
+
+  coachProfile        CoachProfile?
+  coachLinksAsCoach   CoachLink[] @relation("CoachUser")
+  coachLinksAsPatient CoachLink[] @relation("PatientUser")
+  coachNotesAuthored  CoachNote[]
+
+  notificationPrefs NotificationPreference[]
+  notifications     Notification[]
+
+  auditLogsAsActor  AuditLog[] @relation("AuditActor")
+  auditLogsAsTarget AuditLog[] @relation("AuditTarget")
+
+  @@index([email])
+}
+
+/// Refresh-token sessions. Access tokens are short-lived JWTs and not stored;
+/// only the refresh token is persisted (hashed), so it can be revoked (§14).
+model Session {
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String    @unique
+  userAgent        String?
+  createdAt        DateTime  @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+
+  @@index([userId])
+}
+
+/// Append-only. Every write to this table is an insert; nothing here is ever
+/// updated or deleted, including when the subject account is later deleted
+/// (§14's "audit logs for sensitive actions").
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?
+  actor        User?    @relation("AuditActor", fields: [actorUserId], references: [id])
+  action       String
+  targetUserId String?
+  target       User?    @relation("AuditTarget", fields: [targetUserId], references: [id])
+  targetType   String?
+  targetId     String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([targetUserId])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Permissions (§10, §14 · Phase 1 · Build Plan §3.1)
+// ---------------------------------------------------------------------------
+
+/// What a grantee may see about an owner's data, per category. Resolved by a
+/// single can() function in packages/core/policy that every health-data read
+/// passes through — this table is the data, not the enforcement point.
+enum DataCategory {
+  MEDICATIONS
+  ADHERENCE
+  WELLNESS_METRICS
+  CHECKINS
+  MOOD
+  APPOINTMENTS
+}
+
+enum AccessLevel {
+  NONE
+  VIEW
+}
+
+model PermissionGrant {
+  id        String       @id @default(uuid())
+  ownerId   String
+  owner     User         @relation("GrantOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  granteeId String
+  grantee   User         @relation("GrantGrantee", fields: [granteeId], references: [id], onDelete: Cascade)
+  category  DataCategory
+  level     AccessLevel  @default(NONE)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@unique([ownerId, granteeId, category])
+  @@index([granteeId])
+}
+
+// ---------------------------------------------------------------------------
+// Medication (§4, §5, §13 · Phase 2 · Build Plan §3.2, §3.3)
+// ---------------------------------------------------------------------------
+
+model Medication {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  strength     String?
+  form         String?
+  instructions String?
+  startDate    DateTime
+  endDate      DateTime?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  scheduleRules ScheduleRule[]
+  doseInstances DoseInstance[]
+  draftSource   MedicationDraft?
+
+  @@index([userId])
+}
+
+/// Generates DoseInstance rows ahead of time (Build Plan §3.2) rather than
+/// being evaluated live, so a scheduled dose can become MISSED on its own
+/// and adherence percentages are computed from real rows, not inferred.
+model ScheduleRule {
+  id            String     @id @default(uuid())
+  medicationId  String
+  medication    Medication @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+  timesOfDay    String[] // e.g. "08:00", "20:00", in `timezone`
+  daysOfWeek    Int[] // 0-6; empty = every day
+  timezone      String     @default("UTC")
+  windowMinutes Int        @default(60) // grace period after scheduledAt before a dose becomes MISSED
+  createdAt     DateTime   @default(now())
+
+  @@index([medicationId])
+}
+
+enum DoseStatus {
+  PENDING
+  TAKEN
+  SKIPPED
+  SNOOZED
+  MISSED
+  UNKNOWN
+}
+
+model DoseInstance {
+  id           String     @id @default(uuid())
+  medicationId String
+  medication   Medication @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+  scheduledAt  DateTime
+  windowEndsAt DateTime
+  status       DoseStatus @default(PENDING)
+  recordedAt   DateTime?
+  note         String?
+  createdAt    DateTime   @default(now())
+
+  @@index([medicationId, scheduledAt])
+  @@index([status])
+}
+
+/// The scanner cannot bypass verification (Build Plan §3.3): OCR/AI
+/// extraction only ever writes here. A draft becomes a Medication (and can
+/// therefore generate reminders) only via confirmedMedicationId, which is
+/// set by an explicit user-confirmation action, never by the extraction step
+/// itself.
+enum MedicationDraftStatus {
+  PENDING_REVIEW
+  CONFIRMED
+  DISCARDED
+}
+
+model MedicationDraft {
+  id                    String                @id @default(uuid())
+  userId                String
+  user                  User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceImageRef        String?
+  extractedName         String?
+  extractedStrength     String?
+  extractedInstructions String?
+  rawOcrText            String?
+  aiConfidence          Float?
+  status                MedicationDraftStatus @default(PENDING_REVIEW)
+  confirmedMedicationId String?               @unique
+  confirmedMedication   Medication?           @relation(fields: [confirmedMedicationId], references: [id])
+  createdAt             DateTime              @default(now())
+  reviewedAt            DateTime?
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Wellness (§6, §7 · Phase 3)
+// ---------------------------------------------------------------------------
+
+enum MetricType {
+  HEART_RATE
+  BLOOD_PRESSURE
+  BLOOD_GLUCOSE
+  WEIGHT
+  TEMPERATURE
+  SLEEP_HOURS
+  STEPS
+  EXERCISE_MINUTES
+  HYDRATION_ML
+  MOOD
+  PAIN_LEVEL
+}
+
+/// §6 requires user-entered data to be visibly separate from device-generated
+/// data; `source` is mandatory, not inferred, so the UI can always show it.
+enum MetricSource {
+  SELF_REPORTED
+  DEVICE
+}
+
+model HealthMetric {
+  id             String       @id @default(uuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type           MetricType
+  value          Float
+  valueSecondary Float? // e.g. diastolic when type = BLOOD_PRESSURE (value holds systolic)
+  unit           String
+  source         MetricSource
+  recordedAt     DateTime
+  createdAt      DateTime     @default(now())
+
+  @@index([userId, type, recordedAt])
+}
+
+/// One row per user per day. §7's 1-5 scale mirrors the emoji scale in the
+/// spec example (Very difficult .. Great). Fields are nullable because the
+/// check-in only asks relevant follow-ups, never a fixed full questionnaire.
+model CheckIn {
+  id                  String   @id @default(uuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date                DateTime @db.Date
+  mood                Int?
+  energy              Int?
+  sleepQuality        Int?
+  stress              Int?
+  pain                Int?
+  medicationAdherence Int?
+  physicalActivity    Int?
+  generalWellbeing    Int?
+  createdAt           DateTime @default(now())
+
+  @@unique([userId, date])
+}
+
+// ---------------------------------------------------------------------------
+// AI companion (§8, §11, §15, §18 · Phase 4)
+// ---------------------------------------------------------------------------
+
+model AiConversation {
+  id        String @id @default(uuid())
+  userId    String
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startedAt DateTime @default(now())
+
+  messages    AiMessage[]
+  escalations EscalationEvent[]
+
+  @@index([userId])
+}
+
+enum AiMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+/// safetyFlags records what the input classifier / output validator did with
+/// this message (Build Plan §4's pipeline) — the evidence trail for §15.
+model AiMessage {
+  id             String         @id @default(uuid())
+  conversationId String
+  conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           AiMessageRole
+  content        String
+  safetyFlags    Json?
+  createdAt      DateTime       @default(now())
+
+  @@index([conversationId])
+}
+
+/// Raised by the input classifier (not the model's own judgement, per Build
+/// Plan §4) when a message may need professional attention (§11).
+model EscalationEvent {
+  id             String          @id @default(uuid())
+  userId         String
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversationId String?
+  conversation   AiConversation? @relation(fields: [conversationId], references: [id])
+  triggerReason  String
+  createdAt      DateTime        @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Buddy system (§9, §10 · Phase 5)
+// ---------------------------------------------------------------------------
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELED
+}
+
+model BuddyInvite {
+  id          String       @id @default(uuid())
+  fromUserId  String
+  fromUser    User         @relation("InviteFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUserId    String?
+  toUser      User?        @relation("InviteTo", fields: [toUserId], references: [id], onDelete: Cascade)
+  toEmail     String? // invite by email, before the invitee has an account
+  status      InviteStatus @default(PENDING)
+  createdAt   DateTime     @default(now())
+  respondedAt DateTime?
+
+  @@index([toUserId])
+  @@index([fromUserId])
+}
+
+enum BuddyLinkStatus {
+  ACTIVE
+  REMOVED
+}
+
+/// The relationship itself. Visibility is NOT stored here — it's governed by
+/// PermissionGrant, so a link can exist with the default clinical-detail
+/// grant while the user narrows or widens exactly what this buddy sees
+/// (Build Plan §3.1 / README "Buddy visibility").
+model BuddyLink {
+  id        String          @id @default(uuid())
+  userAId   String
+  userA     User            @relation("BuddyUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userBId   String
+  userB     User            @relation("BuddyUserB", fields: [userBId], references: [id], onDelete: Cascade)
+  status    BuddyLinkStatus @default(ACTIVE)
+  createdAt DateTime        @default(now())
+
+  messages            BuddyMessage[]
+  accountabilityGoals AccountabilityGoal[]
+
+  @@unique([userAId, userBId])
+}
+
+enum BuddyMessageType {
+  MESSAGE
+  ENCOURAGEMENT
+  CHECKIN_REQUEST
+}
+
+model BuddyMessage {
+  id          String           @id @default(uuid())
+  buddyLinkId String
+  buddyLink   BuddyLink        @relation(fields: [buddyLinkId], references: [id], onDelete: Cascade)
+  senderId    String
+  sender      User             @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  type        BuddyMessageType @default(MESSAGE)
+  body        String
+  createdAt   DateTime         @default(now())
+
+  @@index([buddyLinkId])
+}
+
+enum GoalStatus {
+  ACTIVE
+  COMPLETED
+  ABANDONED
+}
+
+model AccountabilityGoal {
+  id              String     @id @default(uuid())
+  buddyLinkId     String
+  buddyLink       BuddyLink  @relation(fields: [buddyLinkId], references: [id], onDelete: Cascade)
+  createdByUserId String
+  title           String
+  description     String?
+  targetDate      DateTime?
+  status          GoalStatus @default(ACTIVE)
+  createdAt       DateTime   @default(now())
+
+  @@index([buddyLinkId])
+}
+
+// ---------------------------------------------------------------------------
+// Health coach (§10 · Phase 5 data model / Phase 8 dashboard UI)
+// ---------------------------------------------------------------------------
+
+model CoachProfile {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bio         String?
+  credentials String?
+  createdAt   DateTime @default(now())
+}
+
+enum CoachLinkStatus {
+  PENDING
+  ACTIVE
+  ENDED
+}
+
+model CoachLink {
+  id            String          @id @default(uuid())
+  coachUserId   String
+  coachUser     User            @relation("CoachUser", fields: [coachUserId], references: [id], onDelete: Cascade)
+  patientUserId String
+  patientUser   User            @relation("PatientUser", fields: [patientUserId], references: [id], onDelete: Cascade)
+  status        CoachLinkStatus @default(PENDING)
+  createdAt     DateTime        @default(now())
+
+  notes CoachNote[]
+  goals CoachGoal[]
+
+  @@unique([coachUserId, patientUserId])
+}
+
+model CoachNote {
+  id           String    @id @default(uuid())
+  coachLinkId  String
+  coachLink    CoachLink @relation(fields: [coachLinkId], references: [id], onDelete: Cascade)
+  authorUserId String
+  author       User      @relation(fields: [authorUserId], references: [id])
+  body         String
+  createdAt    DateTime  @default(now())
+
+  @@index([coachLinkId])
+}
+
+/// Non-medical wellness goals only (§10) — enforced in application code, not
+/// the schema, since "non-medical" isn't a structural property of a string.
+model CoachGoal {
+  id          String     @id @default(uuid())
+  coachLinkId String
+  coachLink   CoachLink  @relation(fields: [coachLinkId], references: [id], onDelete: Cascade)
+  title       String
+  description String?
+  targetDate  DateTime?
+  status      GoalStatus @default(ACTIVE)
+  createdAt   DateTime   @default(now())
+
+  @@index([coachLinkId])
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (§13 · Phase 7)
+// ---------------------------------------------------------------------------
+
+enum NotificationCategory {
+  MEDICATION
+  WELLNESS_CHECKIN
+  HYDRATION
+  EXERCISE
+  APPOINTMENT
+  BUDDY
+  COACH
+}
+
+model NotificationPreference {
+  id               String               @id @default(uuid())
+  userId           String
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category         NotificationCategory
+  enabled          Boolean              @default(true)
+  frequencyMinutes Int?
+  quietHoursStart  String? // "22:00"
+  quietHoursEnd    String? // "07:00"
+
+  @@unique([userId, category])
+}
+
+enum NotificationStatus {
+  SCHEDULED
+  SENT
+  DISMISSED
+}
+
+model Notification {
+  id           String               @id @default(uuid())
+  userId       String
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category     NotificationCategory
+  title        String
+  body         String
+  status       NotificationStatus   @default(SCHEDULED)
+  scheduledFor DateTime
+  sentAt       DateTime?
+  createdAt    DateTime             @default(now())
+
+  @@index([userId, status])
+}

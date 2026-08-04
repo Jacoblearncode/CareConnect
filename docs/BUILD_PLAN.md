@@ -5,7 +5,12 @@ This document maps the build to the section numbers of *Build Specification — 
 the phase order.
 
 See the root [`README.md`](../README.md) for the product overview, current status, and roadmap
-summary. This document is the detailed phase-by-phase reference.
+summary — including "Repository structure," which reflects what's actually built today. This
+document describes the intended architecture and stays stable as implementation proceeds.
+
+**Status: Phase 0 (Foundation) complete.** Monorepo, full Prisma schema, seed data, and the
+register/login/refresh/logout/me auth flow are implemented and tested. Phase 1 (Permission spine)
+is next.
 
 ---
 
