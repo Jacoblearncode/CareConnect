@@ -1,4 +1,4 @@
-import { auth as coreAuth } from "@careconnect/core";
+import { auth as coreAuth, doses as coreDoses } from "@careconnect/core";
 import { PrismaClient } from "@prisma/client";
 
 /**
@@ -109,35 +109,37 @@ async function seedMedication(userId: string, spec: MedicationSpec, timezone: st
     },
   });
 
-  const now = Date.now();
-  for (let dayOffset = HISTORY_DAYS; dayOffset >= 0; dayOffset--) {
-    for (const time of spec.timesOfDay) {
-      const [hoursStr, minutesStr] = time.split(":");
-      const scheduledAt = new Date(now - dayOffset * DAY_MS);
-      scheduledAt.setHours(Number(hoursStr), Number(minutesStr), 0, 0);
-      if (scheduledAt.getTime() > now) continue; // don't create future-dated history
+  // Shared with apps/api/src/doses/generate.ts — one definition of "what
+  // times does this schedule imply," so seed data and real medication
+  // creation can never drift apart on that logic.
+  const now = new Date();
+  const rangeStart = new Date(now.getTime() - HISTORY_DAYS * DAY_MS);
+  const doseTimes = coreDoses.generateDoseTimes(
+    { timesOfDay: spec.timesOfDay, daysOfWeek: [], windowMinutes: 60 },
+    rangeStart,
+    now,
+  );
 
-      const windowEndsAt = new Date(scheduledAt.getTime() + 60 * 60 * 1000);
-      const isPast = windowEndsAt.getTime() < now;
-      let status: "TAKEN" | "SKIPPED" | "MISSED" | "PENDING";
-      if (!isPast) {
-        status = "PENDING";
-      } else if (rand() < spec.adherenceRate) {
-        status = "TAKEN";
-      } else {
-        status = rand() < 0.6 ? "MISSED" : "SKIPPED";
-      }
-
-      await prisma.doseInstance.create({
-        data: {
-          medicationId: medication.id,
-          scheduledAt,
-          windowEndsAt,
-          status,
-          recordedAt: status === "PENDING" ? null : windowEndsAt,
-        },
-      });
+  for (const { scheduledAt, windowEndsAt } of doseTimes) {
+    const isPast = windowEndsAt.getTime() < now.getTime();
+    let status: "TAKEN" | "SKIPPED" | "MISSED" | "PENDING";
+    if (!isPast) {
+      status = "PENDING";
+    } else if (rand() < spec.adherenceRate) {
+      status = "TAKEN";
+    } else {
+      status = rand() < 0.6 ? "MISSED" : "SKIPPED";
     }
+
+    await prisma.doseInstance.create({
+      data: {
+        medicationId: medication.id,
+        scheduledAt,
+        windowEndsAt,
+        status,
+        recordedAt: status === "PENDING" ? null : windowEndsAt,
+      },
+    });
   }
 
   return medication;

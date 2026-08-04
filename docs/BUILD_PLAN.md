@@ -8,11 +8,13 @@ See the root [`README.md`](../README.md) for the product overview, current statu
 summary — including "Repository structure," which reflects what's actually built today. This
 document describes the intended architecture and stays stable as implementation proceeds.
 
-**Status: Phase 1 (Permission spine) complete.** Monorepo, full Prisma schema, seed data, the auth
-flow, and the grant-matrix permission gate (`can()` in `packages/core`, wired to the database via
-`apps/api/src/policy/gate.ts`) are implemented and tested, along with audit log, consent,
-data-export, and account-deletion endpoints. Phase 2 (Medication) is next — the first phase whose
-routes will actually call `assertCanView()`.
+**Status: Phase 2 (Medication) complete.** Monorepo, full Prisma schema, seed data, auth, the
+permission spine (Phase 1), and medication management (Phase 2) are implemented and tested:
+medication CRUD, the materialized dose state machine with a lazy sweep that closes overdue doses to
+MISSED, adherence rollups, and the MedicationDraft confirmation gate — the first routes to actually
+call `assertCanView()`, proven with buddy/coach access scoped correctly by category (`MEDICATIONS`
+vs `ADHERENCE`). On-device reminder *delivery* is out of scope until `apps/mobile` exists — the data
+it would fire from is ready now. Phase 3 (Wellness) is next.
 
 ---
 

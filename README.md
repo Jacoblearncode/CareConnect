@@ -222,7 +222,7 @@ Full detail, including which spec section each phase satisfies, is in
 | --- | --- | --- |
 | 0 — Foundation | Monorepo, Prisma schema, seed data, auth | **Complete** |
 | 1 — Permission spine | Grant matrix, audit log, consent/export/delete | **Complete** |
-| 2 — Medication | CRUD, dose state machine, adherence, reminders, OCR-draft gate | Not started |
+| 2 — Medication | CRUD, dose state machine, adherence, reminders, OCR-draft gate | **Complete**\* |
 | 3 — Wellness | Health metrics (11 types), adaptive daily check-in | Not started |
 | 4 — AI companion & safety | Full safety pipeline, escalation, adversarial test suite | Not started |
 | 5 — Human layer | Buddy invites, messaging, accountability; coach data model | Not started |
@@ -237,8 +237,12 @@ Essentials are built end-to-end and properly, before any Advanced item is starte
 
 ### Platform constraints on record
 
-- **Medication reminders are genuinely functional**, not simulated: Expo schedules local
-  notifications on-device with no push server or APNs/FCM credentials required.
+- **\*Phase 2's "reminders" is the server side only.** Every dose a schedule implies is a real,
+  time-windowed `DoseInstance` row — the data a reminder would fire from is correct and complete.
+  Actually *delivering* a reminder on-device needs `apps/mobile` to exist first (Phase 2+, not yet
+  scaffolded — see [Repository structure](#repository-structure)). When it does: Expo schedules
+  local notifications on-device with no push server or APNs/FCM credentials required, so this
+  isn't blocked on any infrastructure decision, just on the mobile app existing.
 - **Voice input likely needs an Expo development build**, not Expo Go, because speech-to-text
   needs a native module. Text-to-speech (read-aloud, §12) works everywhere. Voice input is an
   Advanced item (Phase 9), so this blocks nothing on the Essentials path.
@@ -333,12 +337,28 @@ The permission spine (Phase 1) is also live:
 - `DELETE /privacy/account` (body `{"confirm":"DELETE"}`) — anonymizing account deletion: personal
   health data is hard-deleted, relationships are marked inactive, identity fields are scrubbed
 
+Medication (Phase 2) is also live:
+
+- `GET/POST /medications`, `GET/PATCH /medications/:id` — list/create/view/update; creating
+  generates the next 30 days of `DoseInstance` rows from the schedule
+- `GET /medications/:id/doses`, `GET /doses/today` — dose history and today's due doses
+- `POST /doses/:doseId/record` (body `{"status": "TAKEN"|"SKIPPED"|"SNOOZED"|"UNKNOWN"}`) — TAKEN
+  and SKIPPED are terminal; a system-derived MISSED can still be corrected (late logging); SNOOZED
+  extends the window 15 minutes
+- `GET /medications/adherence` — today/week/month adherence, gated by the narrower `ADHERENCE`
+  category rather than `MEDICATIONS` (a coach can know the rate without knowing the drug)
+- `GET/POST /medications/drafts`, `POST /medications/drafts/:id/confirm|discard` — the OCR
+  verification gate (§3.3): confirming requires the full medication payload again, so nothing a
+  scan extracted ever reaches a `Medication` row without a user resubmitting it, edits included
+- All of the above accept `?userId=` to view another user's data as a buddy/coach — routed through
+  `assertCanView()` per request, category by category
+
 ### 5. Run checks
 
 ```bash
 pnpm lint        # eslint
 pnpm typecheck   # tsc --noEmit, every package
-pnpm test        # vitest — policy engine, auth crypto, category-drift guard
+pnpm test        # vitest — policy engine, dose math, auth crypto, drift guards
 pnpm build       # tsc build, every package
 ```
 
@@ -348,8 +368,9 @@ on every push and pull request.
 ### What's not here yet
 
 - `apps/mobile` and `apps/console` are unscaffolded — see their `README.md` stubs for which phase
-  brings each online.
-- Medication, wellness, buddy, coach, and AI companion routes arrive in Phases 2–5 per the
+  brings each online. On-device reminder delivery waits on `apps/mobile` specifically (see
+  [Platform constraints](#platform-constraints-on-record)).
+- Wellness, buddy, coach, and AI companion routes arrive in Phases 3–5 per the
   [Roadmap](#roadmap). The permission gate they'll route every read through
   (`apps/api/src/policy/gate.ts`) is built and tested now, ahead of having data to protect.
 - The AI safety adversarial test suite referenced in [AI safety](#ai-safety) is written in Phase 4.
@@ -372,15 +393,18 @@ careconnect/
         entry.node.ts  Node dev/deploy entry point
         entry.worker.ts  Cloudflare Workers entry point
         db.node.ts / db.worker.ts  Prisma driver-adapter selection per runtime
-        policy/gate.ts   DB-backed assertCanView() — every future data route calls this first
-        routes/auth.ts        register / login / refresh / logout / me
+        policy/gate.ts   DB-backed assertCanView() — every data route calls this first
+        doses/sweep.ts     closeExpiredDoses() — PENDING/SNOOZED past window -> MISSED
+        doses/generate.ts  materializes DoseInstance rows from a ScheduleRule (30-day horizon)
+        routes/auth.ts          register / login / refresh / logout / me
         routes/permissions.ts   grants: list / set / revoke
         routes/privacy.ts       audit log, consent, export, account deletion
+        routes/medications.ts   medications, doses, adherence, OCR-draft confirmation gate
   packages/
     core/              domain logic — pure TypeScript, no I/O
       src/auth/          password hashing (PBKDF2/WebCrypto), JWT sign/verify — implemented
       src/policy/        canView() grant-matrix decision function (§10, §14) — implemented
-      src/doses/         dose state machine + adherence math (§5) — Phase 2
+      src/doses/         schedule generation + adherence math (§5) — implemented
       src/safety/        AI guardrails, input and output (§15, §18) — Phase 4
       src/ai/            provider abstraction + fallback chain — Phase 4
     contracts/         zod schemas + typed client shared by both apps

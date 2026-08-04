@@ -26,4 +26,5 @@ export const Errors = {
       "no_relationship",
       "You can only grant access to someone you have an active buddy or coach relationship with.",
     ),
+  conflict: (message: string) => new AppError(409, "conflict", message),
 };
